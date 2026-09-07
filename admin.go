@@ -1,0 +1,356 @@
+package redistore
+
+import (
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/redistore/redistore/config"
+	"github.com/redistore/redistore/memory"
+)
+
+// Administrative and introspection commands.
+
+// slowEntry is one SLOWLOG record.
+type slowEntry struct {
+	ID        int64
+	Timestamp int64 // unix seconds
+	Duration  int64 // microseconds
+	Args      []string
+}
+
+// SlowLog keeps a bounded ring of the slowest commands.
+type SlowLog struct {
+	mu         sync.Mutex
+	entries    []slowEntry
+	nextID     int64
+	maxLen     int
+	slowerThan int64 // microseconds; -1 disables, 0 logs everything
+}
+
+func newSlowLog() *SlowLog {
+	return &SlowLog{maxLen: 128, slowerThan: 10000} // 10 ms, Redis' default
+}
+
+// record adds an entry when the command exceeded the threshold.
+func (sl *SlowLog) record(d time.Duration, args []string) {
+	threshold := sl.slowerThan
+	if threshold < 0 {
+		return
+	}
+	us := d.Microseconds()
+	if us < threshold {
+		return
+	}
+	sl.mu.Lock()
+	defer sl.mu.Unlock()
+	sl.nextID++
+	sl.entries = append(sl.entries, slowEntry{
+		ID:        sl.nextID,
+		Timestamp: time.Now().Unix(),
+		Duration:  us,
+		Args:      args,
+	})
+	if len(sl.entries) > sl.maxLen {
+		sl.entries = sl.entries[len(sl.entries)-sl.maxLen:]
+	}
+}
+
+func (sl *SlowLog) reset() {
+	sl.mu.Lock()
+	sl.entries = nil
+	sl.mu.Unlock()
+}
+
+func (sl *SlowLog) len() int {
+	sl.mu.Lock()
+	defer sl.mu.Unlock()
+	return len(sl.entries)
+}
+
+// list returns up to n entries, most recent first.
+func (sl *SlowLog) list(n int) []slowEntry {
+	sl.mu.Lock()
+	defer sl.mu.Unlock()
+	if n <= 0 || n > len(sl.entries) {
+		n = len(sl.entries)
+	}
+	out := make([]slowEntry, n)
+	// Copy in reverse so the newest comes first.
+	for i := range n {
+		out[i] = sl.entries[len(sl.entries)-1-i]
+	}
+	return out
+}
+
+func cmdSlowLog(c *Ctx, args [][]byte) error {
+	if len(args) == 0 {
+		return WrongArgs("slowlog")
+	}
+	sl := c.Store.slowLog
+	switch strings.ToUpper(string(args[0])) {
+	case "GET":
+		n := 10
+		if len(args) > 1 {
+			v, err := toInt64(args[1])
+			if err != nil {
+				return err
+			}
+			n = int(v)
+		}
+		entries := sl.list(n)
+		c.w.WriteArray(len(entries))
+		for _, e := range entries {
+			c.w.WriteArray(4)
+			c.writeInt(e.ID)
+			writeInt(c, e.Timestamp)
+			writeInt(c, e.Duration)
+			c.w.WriteArray(len(e.Args))
+			for _, a := range e.Args {
+				c.w.WriteBulkString(a)
+			}
+		}
+		return nil
+	case "LEN":
+		c.writeInt(int64(sl.len()))
+		return nil
+	case "RESET":
+		sl.reset()
+		c.writeOK()
+		return nil
+	default:
+		return ErrSyntax
+	}
+}
+
+func writeInt(c *Ctx, n int64) { c.w.WriteInt64(n) }
+
+// cmdClient implements the subset of CLIENT that matters operationally:
+// ID, INFO, LIST, SETNAME, GETNAME. KILL and PAUSE need connection registry
+// support that arrives with the PubSub work.
+func cmdClient(c *Ctx, args [][]byte) error {
+	if len(args) == 0 {
+		return WrongArgs("client")
+	}
+	cs := c.Client()
+	if cs == nil {
+		return &protoError{"ERR CLIENT is only available on a server connection"}
+	}
+	switch strings.ToUpper(string(args[0])) {
+	case "ID":
+		c.writeInt(cs.ID)
+	case "SETNAME":
+		if len(args) != 2 {
+			return WrongArgs("client")
+		}
+		cs.Name = string(args[1])
+		c.writeOK()
+	case "GETNAME":
+		if cs.Name == "" {
+			c.writeNull()
+		} else {
+			c.w.WriteBulkString(cs.Name)
+		}
+	case "INFO":
+		c.w.WriteBulkString(clientInfo(c, cs))
+	case "LIST":
+		c.w.WriteBulkString(clientInfo(c, cs))
+	default:
+		return ErrSyntax
+	}
+	return nil
+}
+
+func clientInfo(c *Ctx, cs *connState) string {
+	var b strings.Builder
+	b.WriteString("id=")
+	b.WriteString(strconv.FormatInt(cs.ID, 10))
+	b.WriteString(" addr=")
+	b.WriteString(cs.Addr)
+	b.WriteString(" db=")
+	b.WriteString(strconv.Itoa(int(c.DB)))
+	b.WriteString(" name=")
+	b.WriteString(cs.Name)
+	b.WriteString("\n")
+	return b.String()
+}
+
+// cmdObject reports encoding and eviction metadata for a key.
+func cmdObject(c *Ctx, args [][]byte) error {
+	if len(args) < 2 {
+		return WrongArgs("object")
+	}
+	key := string(args[1])
+	switch strings.ToUpper(string(args[0])) {
+	case "ENCODING":
+		typ, ok, err := c.Store.typeOf(c.DB, key)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			c.writeNull()
+			return nil
+		}
+		if typ == config.TypeString {
+			c.w.WriteBulkString("embstr")
+		} else {
+			c.w.WriteBulkString("listpack")
+		}
+		return nil
+	case "FREQ":
+		if !c.Store.cfg.TracksLFU() {
+			return &protoError{"ERR An LFU maxmemory policy is not selected, access frequency not tracked. Please note that when switching between policies at runtime LRU and LFU data will take some time to adjust."}
+		}
+		e, ok := c.Store.dict.Lookup(c.DB, key)
+		if !ok {
+			c.writeNull()
+			return nil
+		}
+		c.writeInt(int64(e.Freq()))
+		return nil
+	case "IDLETIME":
+		if !c.Store.cfg.TracksLRU() {
+			return &protoError{"ERR An LRU maxmemory policy is not selected, access time not tracked. Please note that when switching between policies at runtime LRU and LFU data will take some time to adjust."}
+		}
+		e, ok := c.Store.dict.Lookup(c.DB, key)
+		if !ok {
+			c.writeNull()
+			return nil
+		}
+		c.writeInt(int64(memory.Idle(c.Store.clock.LRUClock(), e.EntryClock())))
+		return nil
+	case "REFCOUNT":
+		c.writeInt(1)
+		return nil
+	default:
+		return ErrSyntax
+	}
+}
+
+// cmdConfigSet applies the runtime-tunable subset of CONFIG. Anything that
+// would change on-disk layout or the shard topology is rejected: it would need
+// a restart, and pretending otherwise would be worse than saying no.
+func cmdConfigSet(c *Ctx, name string, value string) error {
+	s := c.Store
+	s.cfgMu.Lock()
+	defer s.cfgMu.Unlock()
+
+	switch strings.ToLower(name) {
+	case "maxmemory":
+		v, err := ParseByteSize(value)
+		if err != nil {
+			return err
+		}
+		s.cfg.MaxMemory = v
+	case "maxmemory-policy":
+		old := s.cfg.EvictionPolicy
+		s.cfg.EvictionPolicy = parseEvictionPolicy(strings.ToLower(value))
+		if s.cfg.EvictionPolicy == "" {
+			s.cfg.EvictionPolicy = old
+			return &protoError{"ERR Unsupported maxmemory-policy"}
+		}
+	case "maxmemory-samples":
+		v, err := strconv.Atoi(value)
+		if err != nil || v <= 0 {
+			return &protoError{"ERR Invalid maxmemory-samples value"}
+		}
+		s.cfg.EvictionSample = v
+	case "lfu-decay-time":
+		v, err := strconv.Atoi(value)
+		if err != nil || v < 0 {
+			return &protoError{"ERR Invalid lfu-decay-time value"}
+		}
+		s.cfg.LFUDecayMinutes = v
+	case "slowlog-log-slower-than":
+		v, err := strconv.ParseInt(value, 10, 64)
+		if err != nil {
+			return &protoError{"ERR Invalid slowlog-log-slower-than value"}
+		}
+		s.slowLog.slowerThan = v
+	case "slowlog-max-len":
+		v, err := strconv.Atoi(value)
+		if err != nil || v <= 0 {
+			return &protoError{"ERR Invalid slowlog-max-len value"}
+		}
+		s.slowLog.maxLen = v
+	default:
+		return &protoError{"ERR CONFIG SET is not supported for this parameter"}
+	}
+	c.writeOK()
+	return nil
+}
+
+// ParseByteSize accepts a plain byte count or a 1k/1mb/1gb suffix.
+// Exported so the command-line entry point can accept the same syntax as
+// CONFIG SET maxmemory.
+func ParseByteSize(s string) (uint64, error) {
+	s = strings.TrimSpace(strings.ToLower(s))
+	if s == "" {
+		return 0, &protoError{"ERR Invalid maxmemory value"}
+	}
+	mult := uint64(1)
+	switch {
+	case strings.HasSuffix(s, "gb"):
+		mult, s = 1<<30, strings.TrimSuffix(s, "gb")
+	case strings.HasSuffix(s, "mb"):
+		mult, s = 1<<20, strings.TrimSuffix(s, "mb")
+	case strings.HasSuffix(s, "kb"):
+		mult, s = 1<<10, strings.TrimSuffix(s, "kb")
+	}
+	v, err := strconv.ParseUint(strings.TrimSpace(s), 10, 64)
+	if err != nil {
+		return 0, &protoError{"ERR Invalid maxmemory value"}
+	}
+	return v * mult, nil
+}
+
+// EvictionPolicyType validates an eviction policy name.
+func parseEvictionPolicy(v string) config.EvictionPolicy {
+	switch config.EvictionPolicy(v) {
+	case config.NoEviction, config.AllKeysLRU, config.AllKeysRandom,
+		config.VolatileLRU, config.VolatileRandom, config.VolatileTTL,
+		config.AllKeysLFU, config.VolatileLFU:
+		return config.EvictionPolicy(v)
+	}
+	return ""
+}
+
+func cmdShutdown(c *Ctx, args [][]byte) error {
+	if len(args) > 1 {
+		return ErrSyntax
+	}
+	// Flush memtables so a restart needs no WAL recovery.
+	if err := c.Store.Flush(); err != nil {
+		return err
+	}
+	c.Store.requestShutdown()
+	c.writeNull()
+	return nil
+}
+
+// cmdInfoClients fills in the connection count for the clients section.
+func cmdInfoClients(c *Ctx) string {
+	var b strings.Builder
+	b.WriteString("# Clients\r\n")
+	writeIntField(&b, "connected_clients", c.Server().ConnectedClients())
+	return b.String()
+}
+
+func writeIntField(b *strings.Builder, name string, v int64) {
+	b.WriteString(name)
+	b.WriteString(":")
+	b.WriteString(strconv.FormatInt(v, 10))
+	b.WriteString("\r\n")
+}
+
+// sortedStringKeys is a small helper for deterministic INFO-like output.
+func sortedStringKeys(m map[string]string) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
+}

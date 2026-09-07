@@ -400,3 +400,23 @@ func (d *Dict) recomputeUsed() {
 	}
 	d.used.Store(total)
 }
+
+// RandomKey returns an arbitrary key of the database, or false when empty.
+// Go randomises map range order, so the first key of a random non-empty shard
+// is an unbiased draw.
+func (d *Dict) RandomKey(db uint16) (string, bool) {
+	ds := d.dbs[db].Load()
+	if ds == nil {
+		return "", false
+	}
+	s := ds.randomShard()
+	if s == nil {
+		return "", false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for k := range s.m {
+		return k, true
+	}
+	return "", false
+}

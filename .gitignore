@@ -1,0 +1,18 @@
+# Build output
+/bin/
+/redistored
+
+# Go test binaries & profiles
+*.test
+*.prof
+*.out
+
+# Local data directories created during manual runs
+/data/
+*.sst
+*.log
+*.ldb
+CURRENT
+LOCK
+MANIFEST-*
+OPTIONS-*

@@ -82,6 +82,53 @@ func setupWith(t *testing.T, mutate func(*config.Config)) *resp.Conn {
 // open a second connection to the same server (needed for pub/sub).
 var addrs sync.Map
 
+// setupResult bundles a client with its own teardown, for tests that restart
+// a store on a fixed directory.
+type setupResult struct {
+	c        *resp.Conn
+	teardown func()
+}
+
+// setupPersistent opens a store on the given directory and serves it, handing
+// back a client plus the teardown that closes everything. Two calls with the
+// same directory model a stop/restart cycle.
+func setupPersistent(t *testing.T, dir string) *setupResult {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	cfg := redistore.DefaultOptions()
+	cfg.Dir = dir
+	cfg.SyncPolicy = config.SyncAlways
+	store, err := redistore.Open(cfg)
+	if err != nil {
+		_ = ln.Close()
+		t.Fatalf("open store: %v", err)
+	}
+	srv := redistore.NewServer(store, redistore.ServerOptions{Addr: ln.Addr().String()})
+	go func() { _ = srv.Serve(ln) }()
+
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		_ = srv.Close()
+		_ = store.Close()
+		_ = ln.Close()
+		t.Fatalf("dial: %v", err)
+	}
+	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+	rc := resp.NewConn(conn)
+
+	return &setupResult{c: rc, teardown: func() {
+		_ = srv.Close()
+		_ = store.Close()
+		_ = conn.Close()
+		_ = ln.Close()
+		addrs.Delete(rc)
+	}}
+}
+
 // serverAddrOf returns the address a client is connected to.
 func serverAddrOf(t *testing.T, c *resp.Conn) string {
 	t.Helper()
@@ -145,4 +192,9 @@ func assertStr(t *testing.T, v resp.Value, want string) {
 	if v.String() != want {
 		t.Errorf("expected %q, got %q", want, v.String())
 	}
+}
+
+// nowPlus returns a deadline helper for pushes from goroutines.
+func nowPlus(seconds int) time.Time {
+	return time.Now().Add(time.Duration(seconds) * time.Second)
 }

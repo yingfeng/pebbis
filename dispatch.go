@@ -153,6 +153,58 @@ var commands = map[string]command{
 	"PUBLISH":      {cmdPublish, 3, false},
 	"PUBSUB":       {cmdPubSub, -2, false},
 
+	// Sorted-set completion.
+	"ZLEXCOUNT":      {cmdZLexCount, 4, false},
+	"ZRANGEBYLEX":    {cmdZRangeByLex, -4, false},
+	"ZREVRANGEBYLEX": {cmdZRevRangeByLex, -4, false},
+	"ZREMRANGEBYLEX": {cmdZRemRangeByLex, 4, true},
+	"ZUNION":         {cmdZUnion, -3, false},
+	"ZINTER":         {cmdZInter, -3, false},
+	"ZDIFF":          {cmdZDiff, -3, false},
+	"ZUNIONSTORE":    {cmdZUnionStore, -4, true},
+	"ZINTERSTORE":    {cmdZInterStore, -4, true},
+	"ZDIFFSTORE":     {cmdZDiffStore, -4, true},
+	"ZRANGESTORE":    {cmdZRangeStore, -5, true},
+	"ZRANDMEMBER":    {cmdZRandMember, -2, false},
+	"ZMPOP":          {cmdZMPop, -4, true},
+	"BZPOPMIN":       {cmdBZPopMin, -3, true},
+	"BZPOPMAX":       {cmdBZPopMax, -3, true},
+	"BZMPOP":         {cmdBZMPop, -5, true},
+
+	// List completion.
+	"LMOVE":  {cmdLMove, 5, true},
+	"BLMOVE": {cmdBLMove, 6, true},
+	"LPOS":   {cmdLPos, -3, false},
+	"LMPOP":  {cmdLMPop, -4, true},
+	"BLMPOP": {cmdBLMPop, -5, true},
+
+	// Generic completion.
+	"COPY":        {cmdCopy, -3, true},
+	"MOVE":        {cmdMove, 3, true},
+	"RANDOMKEY":   {cmdRandomKey, 1, false},
+	"EXPIRETIME":  {cmdExpireTime, 2, false},
+	"PEXPIRETIME": {cmdPExpireTime, 2, false},
+
+	// String completion.
+	"INCRBYFLOAT": {cmdIncrByFloat, 3, true},
+	"LCS":         {cmdLCS, -3, false},
+
+	// Streams: the reliable-queue surface. Entries are PEL-tracked per group
+	// until XACK, which is what survives a consumer crash.
+	"XADD":       {cmdXAdd, -5, true},
+	"XLEN":       {cmdXLen, 2, false},
+	"XRANGE":     {cmdXRange, -4, false},
+	"XREVRANGE":  {cmdXRevRange, -4, false},
+	"XREAD":      {cmdXRead, -4, false},
+	"XDEL":       {cmdXDel, -3, true},
+	"XTRIM":      {cmdXTrim, -4, true},
+	"XGROUP":     {cmdXGroup, -2, true},
+	"XREADGROUP": {cmdXReadGroup, -7, true},
+	"XACK":       {cmdXAck, -4, true},
+	"XPENDING":   {cmdXPending, -2, false},
+	"XCLAIM":     {cmdXClaim, -6, true},
+	"XINFO":      {cmdXInfo, -2, false},
+
 	// Server.
 	"AUTH":     {cmdAuth, -2, false},
 	"INFO":     {cmdInfo, -1, false},

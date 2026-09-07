@@ -85,3 +85,25 @@ func BenchmarkInlineHSet(b *testing.B) {
 		}
 	}
 }
+
+// BenchmarkStreamXAdd measures the queue's hottest path: appending to a stream
+// that already holds 10000 entries. The reverse seek added to XADD is what
+// keeps this flat instead of growing with the stream.
+func BenchmarkStreamXAdd(b *testing.B) {
+	s := openGroupStore(b)
+	for i := 0; i < 10000; i++ {
+		if _, err := s.xAdd(0, "q", streamID{}, true, []streamField{
+			{Field: "job", Value: strconv.Itoa(i)},
+		}, false); err != nil {
+			b.Fatalf("xadd: %v", err)
+		}
+	}
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		if _, err := s.xAdd(0, "q", streamID{}, true, []streamField{
+			{Field: "job", Value: strconv.Itoa(i)},
+		}, false); err != nil {
+			b.Fatalf("xadd: %v", err)
+		}
+	}
+}

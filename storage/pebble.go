@@ -165,6 +165,25 @@ func (e *Engine) ScanRange(start, end []byte, fn func(key, value []byte) error) 
 	return iter.Error()
 }
 
+// LastInRange returns the greatest key/value in [start, end] (both inclusive)
+// via a reverse seek. This is what makes XADD's ID generation O(logN) instead
+// of a scan of the whole stream: "the newest entry" is one SeekLT away.
+// The returned key and value are copies; release is nil-safe.
+func (e *Engine) LastInRange(start, end []byte) (key, value []byte, found bool, err error) {
+	iter, err := e.db.NewIter(&pebble.IterOptions{LowerBound: start, UpperBound: prefixEnd(end)})
+	if err != nil {
+		return nil, nil, false, err
+	}
+	defer func() { _ = iter.Close() }()
+
+	if valid := iter.Last(); valid {
+		key = append([]byte(nil), iter.Key()...)
+		value = append([]byte(nil), iter.Value()...)
+		found = true
+	}
+	return key, value, found, iter.Error()
+}
+
 // ScanKeys visits only the keys under prefix, avoiding value materialisation.
 func (e *Engine) ScanKeys(prefix []byte, fn func(key []byte) error) error {
 	iter, err := e.db.NewIter(&pebble.IterOptions{

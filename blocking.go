@@ -14,72 +14,80 @@ import (
 // resumption path. The waiter table exists only so a push can wake a sleeper
 // instead of making it wait out its timeout.
 
-// waiter is one blocked command.
+// blocker is a condition variable: writers bump the version on every push,
+// blocked commands compare the version they last observed. Sleeping on a stale
+// version cannot miss a push, no matter where the check/sleep boundary falls.
+
 type waiter struct {
 	db   uint16
 	keys []string
 	ch   chan struct{}
 }
 
-// blocker wakes commands blocked on BLPOP/BRPOP when a list gains an element.
 type blocker struct {
-	mu      sync.Mutex
-	waiters []*waiter
+	mu    sync.Mutex
+	seq   uint64
+	chans []chan struct{}
 }
 
 func newBlocker() *blocker { return &blocker{} }
 
-// wait blocks until one of keys is signalled or the timeout elapses. A zero or
-// negative timeout waits forever, matching Redis' "0 = block indefinitely".
-func (b *blocker) wait(db uint16, keys []string, timeout time.Duration) bool {
-	w := &waiter{db: db, keys: keys, ch: make(chan struct{}, 1)}
-
+// version returns the current notify generation. Take it BEFORE checking the
+// data, then sleep on it: if any push happened in between, the sleep returns
+// immediately.
+func (b *blocker) version() uint64 {
 	b.mu.Lock()
-	b.waiters = append(b.waiters, w)
+	defer b.mu.Unlock()
+	return b.seq
+}
+
+// sleepSince parks until the version moves past `since` or the timeout
+// elapses. The version comparison happens under the blocker lock, so a push
+// concurrent with the check cannot be missed. Spurious wakeups (a push to an
+// unrelated key) are fine: the caller simply re-checks its data.
+func (b *blocker) sleepSince(since uint64, timeout time.Duration) bool {
+	b.mu.Lock()
+	if b.seq != since {
+		b.mu.Unlock()
+		return true
+	}
+	ch := make(chan struct{}, 1)
+	b.chans = append(b.chans, ch)
 	b.mu.Unlock()
 
-	defer func() {
+	if timeout <= 0 {
+		<-ch
+		return true
+	}
+	select {
+	case <-ch:
+		return true
+	case <-time.After(timeout):
 		b.mu.Lock()
-		for i, x := range b.waiters {
-			if x == w {
-				b.waiters = append(b.waiters[:i], b.waiters[i+1:]...)
+		for i, c := range b.chans {
+			if c == ch {
+				b.chans = append(b.chans[:i], b.chans[i+1:]...)
 				break
 			}
 		}
 		b.mu.Unlock()
-	}()
-
-	if timeout <= 0 {
-		<-w.ch
-		return true
-	}
-	select {
-	case <-w.ch:
-		return true
-	case <-time.After(timeout):
 		return false
 	}
 }
 
-// notify wakes every waiter interested in (db, key).
+// notify bumps the version and wakes every sleeper. A push to any key wakes
+// all blocked commands; each re-checks its own keys, so a spurious wakeup
+// costs one extra empty read and cannot lose an update.
 func (b *blocker) notify(db uint16, key string) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-	for _, w := range b.waiters {
-		if w.db != db {
-			continue
-		}
-		for _, k := range w.keys {
-			if k != key {
-				continue
-			}
-			// Buffered with capacity 1: a signal arriving with nobody waiting
-			// is not lost, it just makes the next wait return immediately.
-			select {
-			case w.ch <- struct{}{}:
-			default:
-			}
-			break
+	b.seq++
+	chs := b.chans
+	b.chans = nil
+	b.mu.Unlock()
+	for _, ch := range chs {
+		select {
+		case ch <- struct{}{}:
+		default:
 		}
 	}
 }
@@ -88,7 +96,7 @@ func (b *blocker) notify(db uint16, key string) {
 func (b *blocker) blockedLen() int {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return len(b.waiters)
+	return len(b.chans)
 }
 
 // blockedPop is the shared body of BLPOP and BRPOP.
@@ -116,9 +124,10 @@ func blockedPop(c *Ctx, args [][]byte, left bool) error {
 		deadline = time.Now().Add(timeout)
 	}
 
+	// Version taken BEFORE the first check: a push landing anywhere between
+	// the check and the sleep bumps the version and wakes us immediately.
+	v := c.Store.blockVersion()
 	for {
-		// Try every key in order before blocking: a non-empty list is served
-		// immediately, exactly as Redis does.
 		for _, k := range keys {
 			out, err := c.Store.listPop(c.DB, k, 1, left)
 			if err != nil {
@@ -141,18 +150,22 @@ func blockedPop(c *Ctx, args [][]byte, left bool) error {
 			}
 			timeout = remaining
 		}
-		if !c.Store.blockWait(c.DB, keys, timeout) {
+		if !c.Store.blockSleepSince(v, timeout) {
 			c.writeNull()
 			return nil
 		}
+		v = c.Store.blockVersion()
 		// Woken up: loop and try again. A spurious wake (another client took
 		// the element) simply blocks again until the deadline.
 	}
 }
 
-// blockWait is the Store-level entry used by the blocking commands.
-func (s *Store) blockWait(db uint16, keys []string, timeout time.Duration) bool {
-	return s.blocker.wait(db, keys, timeout)
+// blockVersion is taken before the emptiness check.
+func (s *Store) blockVersion() uint64 { return s.blocker.version() }
+
+// blockSleepSince parks until a push bumps the version past `since`.
+func (s *Store) blockSleepSince(since uint64, timeout time.Duration) bool {
+	return s.blocker.sleepSince(since, timeout)
 }
 
 // notifyListChanged wakes anyone blocked on key. Called after a successful push.
@@ -184,6 +197,7 @@ func cmdBRPopLPush(c *Ctx, args [][]byte) error {
 		deadline = time.Now().Add(timeout)
 	}
 
+	v := c.Store.blockVersion()
 	for {
 		out, err := c.Store.listPop(c.DB, src, 1, false)
 		if err != nil {
@@ -204,9 +218,10 @@ func cmdBRPopLPush(c *Ctx, args [][]byte) error {
 			}
 			timeout = remaining
 		}
-		if !c.Store.blockWait(c.DB, []string{src}, timeout) {
+		if !c.Store.blockSleepSince(v, timeout) {
 			c.writeNull()
 			return nil
 		}
+		v = c.Store.blockVersion()
 	}
 }

@@ -60,6 +60,22 @@ type Server struct {
 	psMu     sync.Mutex
 	channels map[string]int
 	patterns map[string]int
+
+	// writeMu serialises write commands. Every write is a read-modify-write
+	// over Pebble (load aggregate, edit, save batch), which loses updates when
+	// two writers race on one key. Redis gets its atomicity from a single
+	// thread; serialising writes reproduces that guarantee while reads stay
+	// fully parallel. Blocking commands are exempt - they may park inside the
+	// handler, which would deadlock every other writer.
+	writeMu sync.Mutex
+}
+
+// blockingCmds may park inside their handler while holding no other locks.
+// They are excluded from writeMu because they would otherwise serialise and
+// starve all writes for up to their whole timeout.
+var blockingCmds = map[string]bool{
+	"BLPOP": true, "BRPOP": true, "BRPOPLPUSH": true, "BLMOVE": true,
+	"BLMPOP": true, "BZPOPMIN": true, "BZPOPMAX": true, "BZMPOP": true,
 }
 
 // subscribe registers a subscriber and hands the connection to redcon, which
@@ -300,6 +316,14 @@ func (srv *Server) handle(conn redcon.Conn, cmd redcon.Command) {
 		srv:        srv,
 		conn:       conn,
 		w:          conn,
+	}
+
+	// Write commands run under the global write lock: a lost update between
+	// two concurrent read-modify-writes on one key would violate Redis'
+	// atomic-command contract. Reads stay parallel.
+	if cm.write && !blockingCmds[upper] {
+		srv.writeMu.Lock()
+		defer srv.writeMu.Unlock()
 	}
 
 	start := time.Now()

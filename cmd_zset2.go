@@ -622,6 +622,7 @@ func bzPopCmd(c *Ctx, args [][]byte, max bool) error {
 		deadline = time.Now().Add(timeout)
 	}
 	for {
+		bvkeysVersion1 := c.Store.blockVersion()
 		key, items, err := zPopFromKeys(c, keys, 1, max)
 		if err != nil {
 			return err
@@ -641,10 +642,11 @@ func bzPopCmd(c *Ctx, args [][]byte, max bool) error {
 			}
 			timeout = remaining
 		}
-		if !c.Store.blockWait(c.DB, keys, timeout) {
+		if !c.Store.blockSleepSince(bvkeysVersion1, timeout) {
 			c.writeNull()
 			return nil
 		}
+		bvkeysVersion1 = c.Store.blockVersion()
 	}
 }
 
@@ -692,6 +694,7 @@ func cmdBZMPop(c *Ctx, args [][]byte) error {
 		deadline = time.Now().Add(timeout)
 	}
 	for {
+		bvkeysVersion2 := c.Store.blockVersion()
 		key, items, err := zPopFromKeys(c, keys, count, max)
 		if err != nil {
 			return err
@@ -708,9 +711,10 @@ func cmdBZMPop(c *Ctx, args [][]byte) error {
 			}
 			timeout = remaining
 		}
-		if !c.Store.blockWait(c.DB, keys, timeout) {
+		if !c.Store.blockSleepSince(bvkeysVersion2, timeout) {
 			c.writeNull()
 			return nil
 		}
+		bvkeysVersion2 = c.Store.blockVersion()
 	}
 }

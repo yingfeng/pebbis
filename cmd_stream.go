@@ -334,6 +334,7 @@ streams:
 		deadline = time.Now().Add(timeout)
 	}
 	for {
+		bvkeysVersion := c.Store.blockVersion()
 		var reply []string
 		var batches [][]streamEntry
 		for ki, k := range keys {
@@ -368,10 +369,11 @@ streams:
 				timeout = remaining
 			}
 		}
-		if !c.Store.blockWait(c.DB, keys, timeout) {
+		if !c.Store.blockSleepSince(bvkeysVersion, timeout) {
 			c.writeNull()
 			return nil
 		}
+		bvkeysVersion = c.Store.blockVersion()
 		// After a wake the caller wants everything newer than what it asked
 		// for; the IDs stay as the low bound, which is exactly that.
 	}
@@ -585,6 +587,7 @@ streams:
 			deadline = time.Now().Add(time.Duration(blockMs) * time.Millisecond)
 		}
 		for {
+			bvkeysVersion := c.Store.blockVersion()
 			var t time.Duration
 			if blockMs > 0 {
 				remaining := time.Until(deadline)
@@ -594,10 +597,11 @@ streams:
 				}
 				t = remaining
 			}
-			if !c.Store.blockWait(c.DB, keys, t) {
+			if !c.Store.blockSleepSince(bvkeysVersion, t) {
 				c.writeNull()
 				return nil
 			}
+			bvkeysVersion = c.Store.blockVersion()
 			// Retry the new-entry read once woken.
 			var r2 []string
 			var b2 [][]streamEntry

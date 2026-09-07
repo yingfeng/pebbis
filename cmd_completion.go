@@ -63,6 +63,7 @@ func lmoveCmd(c *Ctx, args [][]byte, blocking bool) error {
 		deadline = time.Now().Add(timeout)
 	}
 	for {
+		bvsrcVersion := c.Store.blockVersion()
 		v, ok, err := c.Store.listPopSide(c.DB, src, srcLeft)
 		if err != nil {
 			return err
@@ -86,10 +87,11 @@ func lmoveCmd(c *Ctx, args [][]byte, blocking bool) error {
 			}
 			timeout = remaining
 		}
-		if !c.Store.blockWait(c.DB, []string{src}, timeout) {
+		if !c.Store.blockSleepSince(bvsrcVersion, timeout) {
 			c.writeNull()
 			return nil
 		}
+		bvsrcVersion = c.Store.blockVersion()
 	}
 }
 
@@ -262,6 +264,7 @@ func lmpopCmd(c *Ctx, args [][]byte, blocking bool) error {
 		deadline = time.Now().Add(timeout)
 	}
 	for {
+		bvkeysVersion := c.Store.blockVersion()
 		for _, k := range keys {
 			a, err := c.Store.loadAgg(c.DB, k, config.TypeList)
 			if err != nil {
@@ -294,10 +297,11 @@ func lmpopCmd(c *Ctx, args [][]byte, blocking bool) error {
 			}
 			timeout = remaining
 		}
-		if !c.Store.blockWait(c.DB, keys, timeout) {
+		if !c.Store.blockSleepSince(bvkeysVersion, timeout) {
 			c.writeNull()
 			return nil
 		}
+		bvkeysVersion = c.Store.blockVersion()
 	}
 }
 

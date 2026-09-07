@@ -220,7 +220,9 @@ func cmdMSetNX(c *Ctx, args [][]byte) error {
 			return nil
 		}
 	}
-	if err := cmdMSet(c, args); err != nil {
+	// Write via the shared pair writer directly: calling cmdMSet here would
+	// emit its own OK reply and desynchronise the response stream.
+	if err := c.Store.mSetPairs(c.DB, args); err != nil {
 		return err
 	}
 	c.writeInt(1)
@@ -235,6 +237,13 @@ func cmdMGet(c *Ctx, args [][]byte) error {
 	for _, a := range args {
 		val, ok, err := c.Store.getString(c.DB, string(a))
 		if err != nil {
+			if err == ErrWrongType {
+				// Redis: non-string keys reply nil, not WRONGTYPE. The array
+				// header is already on the wire, so an error here would
+				// desynchronise the whole response stream.
+				c.writeNull()
+				continue
+			}
 			return err
 		}
 		if !ok {

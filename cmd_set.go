@@ -509,26 +509,31 @@ func cmdSInterStore(c *Ctx, args [][]byte) error { return setStoreOp(c, args, op
 func cmdSDiffStore(c *Ctx, args [][]byte) error  { return setStoreOp(c, args, opDiff) }
 
 func cmdSInterCard(c *Ctx, args [][]byte) error {
-	if len(args) < 1 || len(args) > 3 {
+	if len(args) < 1 {
 		return WrongArgs("sintercard")
 	}
 	numkeys, err := toInt64(args[0])
 	if err != nil {
 		return err
 	}
-	if int(numkeys) > len(args)-1 {
+	if numkeys < 0 || int(numkeys) > len(args)-1 {
 		return &protoError{"ERR Number of keys is greater than the number of arguments"}
 	}
 	keys := byteSliceToStrings(args[1 : 1+numkeys])
+	// Optional trailing LIMIT <n>; nothing else may follow the keys.
 	limit := 0
-	if len(args) == 3+0 && len(args) > 1+int(numkeys) {
-		if eqFold(args[1+numkeys], "LIMIT") {
-			v, err := toInt64(args[2+numkeys])
-			if err != nil {
-				return err
-			}
-			limit = int(v)
+	if rest := args[1+numkeys:]; len(rest) > 0 {
+		if len(rest) != 2 || !eqFold(rest[0], "limit") { // eqFold compares against a lower-case literal
+			return ErrSyntax
 		}
+		v, err := toInt64(rest[1])
+		if err != nil {
+			return err
+		}
+		if v < 0 {
+			return ErrNotInteger
+		}
+		limit = int(v) // 0 means "no limit", matching Redis
 	}
 	if len(keys) == 0 {
 		c.writeInt(0)

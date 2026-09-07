@@ -263,6 +263,11 @@ func (srv *Server) handle(conn redcon.Conn, cmd redcon.Command) {
 
 	cm, ok := lookupCommand(upper)
 	if !ok {
+		// Redis: an unknown command inside MULTI poisons the queue, so EXEC
+		// replies EXECABORT and discards everything queued so far.
+		if st := srv.connState(conn); st.inTxn {
+			st.dirtyTxn = true
+		}
 		conn.WriteError(UnknownCommand(strings.ToLower(name)).Error())
 		return
 	}
@@ -276,8 +281,9 @@ func (srv *Server) handle(conn redcon.Conn, cmd redcon.Command) {
 	}
 
 	// Inside MULTI, only the transaction control commands run; everything else
-	// is queued and answered with +QUEUED.
-	if st.inTxn && upper != "MULTI" && upper != "EXEC" && upper != "DISCARD" && upper != "QUIT" {
+	// is queued and answered with +QUEUED. WATCH is deliberately excluded: it
+	// must fail loudly instead of being queued.
+	if st.inTxn && upper != "MULTI" && upper != "EXEC" && upper != "DISCARD" && upper != "QUIT" && upper != "WATCH" {
 		st.queue = append(st.queue, flattenArgs(name, args))
 		conn.WriteString("QUEUED")
 		return

@@ -305,6 +305,14 @@ func cmdZAdd(c *Ctx, args [][]byte) error {
 		}
 	}
 parse:
+	// Redis: NX vs XX are mutually exclusive, and GT/LT cannot combine with
+	// NX. Must live after the parse label: the option scan's goto lands here.
+	if opt.NX && (opt.XX || opt.GT || opt.LT) {
+		return ErrSyntax
+	}
+	if opt.GT && opt.LT {
+		return ErrSyntax
+	}
 	members := []storage.Member{}
 	for ; i+1 < len(args); i += 2 {
 		score, err := toFloat(args[i])
@@ -312,6 +320,10 @@ parse:
 			return err
 		}
 		members = append(members, storage.Member{Score: score, Member: string(args[i+1])})
+	}
+	if i < len(args) {
+		// Trailing token without a paired score: Redis rejects this outright.
+		return ErrSyntax
 	}
 	if len(members) == 0 {
 		return WrongArgs("zadd")

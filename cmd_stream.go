@@ -14,15 +14,45 @@ import (
 // parseStreamBounds reads the start/end of XRANGE: "-" / "+" / id / ms.
 func parseStreamBound(b []byte, asStart bool) (streamID, error) {
 	s := string(b)
+	exclusive := false
+	if strings.HasPrefix(s, "(") {
+		// Redis exclusive bound: "(id" excludes the ID itself. "(" must be
+		// followed by a valid ID; "(-" and "(0-0" as a start are errors.
+		exclusive = true
+		s = s[1:]
+	}
 	switch s {
 	case "-":
+		if exclusive {
+			return streamID{}, &protoError{"ERR Invalid stream ID specified as stream command argument"}
+		}
 		return streamID{}, nil
 	case "+":
+		if exclusive {
+			return streamID{}, &protoError{"ERR Invalid stream ID specified as stream command argument"}
+		}
 		return streamID{ms: ^uint64(0), seq: ^uint64(0)}, nil
 	}
 	id, err := parseStreamID(s)
 	if err != nil {
 		return id, err
+	}
+	if exclusive {
+		if asStart {
+			// "(1-0" starts after 1-0.
+			if id.seq == ^uint64(0) {
+				return streamID{ms: id.ms + 1}, nil
+			}
+			return streamID{ms: id.ms, seq: id.seq + 1}, nil
+		}
+		// "(1-2" ends before 1-2.
+		if id.seq == 0 {
+			if id.ms == 0 {
+				return streamID{}, &protoError{"ERR Invalid stream ID specified as stream command argument"}
+			}
+			return streamID{ms: id.ms - 1, seq: ^uint64(0)}, nil
+		}
+		return streamID{ms: id.ms, seq: id.seq - 1}, nil
 	}
 	// Incomplete IDs pad differently per side: XSTART 1 means 1-0, XEND 1
 	// means 1-max.
@@ -65,6 +95,10 @@ func cmdXAdd(c *Ctx, args [][]byte) error {
 	var id streamID
 	auto := string(args[i]) == "*"
 	if !auto {
+		// Unlike XRANGE bounds, XADD requires a fully qualified "ms-seq" ID.
+		if !strings.Contains(string(args[i]), "-") {
+			return &protoError{"ERR Invalid stream ID specified as stream command argument"}
+		}
 		var err error
 		if id, err = parseStreamID(string(args[i])); err != nil {
 			return err
@@ -347,6 +381,12 @@ func cmdXGroupCreate(c *Ctx, args [][]byte) error {
 	idStr := string(args[2])
 	mkstream := len(args) > 3 && strings.EqualFold(string(args[3]), "MKSTREAM")
 
+	if _, exists, err := c.Store.groupGet(c.DB, key, group); err != nil {
+		return err
+	} else if exists {
+		return &protoError{"BUSYGROUP consumer group name '" + group + "' already exists"}
+	}
+
 	if idStr == "$" {
 		// "$" means "start from the stream's last entry" - which on an empty
 		// stream is 0-0, so everything added afterwards is new.
@@ -600,6 +640,11 @@ func cmdXAck(c *Ctx, args [][]byte) error {
 		return WrongArgs("xack")
 	}
 	key, group := string(args[0]), string(args[1])
+	if _, exists, err := c.Store.groupGet(c.DB, key, group); err != nil {
+		return err
+	} else if !exists {
+		return &protoError{"NOGROUP No such key '" + key + "' or consumer group '" + group + "'"}
+	}
 	var n int64
 	for _, a := range args[2:] {
 		id, err := parseStreamID(string(a))
@@ -635,10 +680,14 @@ func cmdXPending(c *Ctx, args [][]byte) error {
 	}
 	if len(args) >= 5 {
 		var err error
-		if start, err = parseStreamID(string(args[2])); err != nil {
+		if string(args[2]) == "-" {
+			start = streamID{}
+		} else if start, err = parseStreamID(string(args[2])); err != nil {
 			return err
 		}
-		if end, err = parseStreamID(string(args[3])); err != nil {
+		if string(args[3]) == "+" {
+			end = streamID{ms: ^uint64(0), seq: ^uint64(0)}
+		} else if end, err = parseStreamID(string(args[3])); err != nil {
 			return err
 		}
 		v, err := atoi(args[4])

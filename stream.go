@@ -531,6 +531,16 @@ func (s *Store) pelOwned(db uint16, key, group, consumer string, count int) ([]s
 	}
 	out := make([]streamEntry, 0, len(pending))
 	for _, p := range pending {
+		// Re-delivery bumps the delivery counter and timestamp, as in Redis.
+		pk := appendStreamPELKey(nil, db, key, group, p.id)
+		nv := make([]byte, 0, len(p.consumer)+1+4+8)
+		nv = append(nv, p.consumer...)
+		nv = append(nv, 0x00)
+		nv = binary.BigEndian.AppendUint32(nv, p.deliveryCert+1)
+		nv = binary.BigEndian.AppendUint64(nv, uint64(s.clock.Now().UnixMilli()))
+		if err := s.eng.Put(pk, nv); err != nil {
+			return nil, err
+		}
 		v, release, err := s.eng.Get(appendStreamEntryKey(nil, db, key, p.id))
 		if err != nil {
 			continue // deleted meanwhile

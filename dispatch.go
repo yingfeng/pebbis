@@ -131,6 +131,7 @@ var commands = map[string]command{
 	"ZREVRANK":         {cmdZRevRank, 3, false},
 	"ZINCRBY":          {cmdZIncrBy, 4, true},
 	"ZRANGE":           {cmdZRange, -4, false},
+	"ZREVRANGE":        {cmdZRevRange, 4, false},
 	"ZRANGEBYSCORE":    {cmdZRangeByScore, -4, false},
 	"ZCOUNT":           {cmdZCount, 4, false},
 	"ZPOPMIN":          {cmdZPopMin, -2, true},

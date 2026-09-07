@@ -225,8 +225,12 @@ func cmdXTrim(c *Ctx, args [][]byte) error {
 	case "MAXLEN":
 		approx := false
 		idx := 2
-		if strings.EqualFold(string(args[idx]), "~") {
+		switch strings.ToUpper(string(args[idx])) {
+		case "~":
 			approx = true
+			idx++
+		case "=":
+			// Exact limit marker; executed like the approximate form here.
 			idx++
 		}
 		n, err := atoi(args[idx])
@@ -704,13 +708,31 @@ func cmdXPending(c *Ctx, args [][]byte) error {
 		return err
 	}
 	if len(args) < 5 {
-		// Summary form: [total, [min-id...], [per-consumer counts...]]. The
-		// detail arrays are simplified to empty; the detail form below has the
-		// full rows.
-		c.w.WriteArray(3)
+		// Summary form: [total, first-id, last-id, [[consumer, count]...]].
+		// Missing IDs reply null, matching Redis.
+		c.w.WriteArray(4)
 		c.writeInt(int64(len(pending)))
-		c.writeNull()
-		c.w.WriteArray(0)
+		if len(pending) == 0 {
+			c.writeNull()
+			c.writeNull()
+		} else {
+			c.w.WriteBulkString(pending[0].id.String())
+			c.w.WriteBulkString(pending[len(pending)-1].id.String())
+		}
+		counts := map[string]int64{}
+		var order []string
+		for _, p := range pending {
+			if _, ok := counts[p.consumer]; !ok {
+				order = append(order, p.consumer)
+			}
+			counts[p.consumer]++
+		}
+		c.w.WriteArray(len(order))
+		for _, name := range order {
+			c.w.WriteArray(2)
+			c.w.WriteBulkString(name)
+			c.writeInt(counts[name])
+		}
 		return nil
 	}
 	c.w.WriteArray(len(pending))
@@ -761,11 +783,16 @@ func cmdXInfoGroups(c *Ctx, args [][]byte) error {
 		return err
 	}
 	key := string(args[0])
+	// Namespace = Seg|db|key|0x00: everything from here on is a group key.
 	gp := streamGroupPrefix(c.DB, key, "")
+	gp = gp[:len(gp)-1] // drop the empty group's terminator, keep key|0x00
 	var groups []string
 	err := c.Store.eng.ScanKeys(gp, func(k []byte) error {
-		name := storage.KeyFromDataKey(append([]byte(nil), k[len(gp)-1:]...))
-		groups = append(groups, name)
+		raw := k[len(gp):]
+		if len(raw) == 0 || raw[len(raw)-1] != 0x00 {
+			return nil
+		}
+		groups = append(groups, string(raw[:len(raw)-1]))
 		return nil
 	})
 	if err != nil {

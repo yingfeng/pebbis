@@ -157,6 +157,20 @@ func cmdClient(c *Ctx, args [][]byte) error {
 		c.w.WriteBulkString(clientInfo(c, cs))
 	case "LIST":
 		c.w.WriteBulkString(clientInfo(c, cs))
+	case "SETINFO":
+		// Go-redis sends CLIENT SETINFO (lib-name/lib-ver) on every new
+		// connection. The attribute is accepted and discarded; Redis itself
+		// only rejects the reserved attributes.
+		if len(args) != 3 {
+			return WrongArgs("client")
+		}
+		attr := strings.ToLower(string(args[1]))
+		if attr == "lib-ver" || attr == "lib-name" {
+			// reserved but settable in Redis 7.2; we just accept it.
+			c.writeOK()
+			return nil
+		}
+		return &protoError{"ERR Unrecognized option specified by CLIENT SETINFO"}
 	default:
 		return ErrSyntax
 	}

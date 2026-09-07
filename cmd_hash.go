@@ -350,6 +350,7 @@ func cmdHRandField(c *Ctx, args [][]byte) error {
 		return WrongArgs("hrandfield")
 	}
 	count := 1
+	hasCount := false
 	withValues := false
 	if len(args) >= 2 {
 		n, err := toInt64(args[1])
@@ -357,6 +358,7 @@ func cmdHRandField(c *Ctx, args [][]byte) error {
 			return err
 		}
 		count = int(n)
+		hasCount = true
 	}
 	for _, a := range args[2:] {
 		if eqFold(a, "WITHVALUES") {
@@ -397,7 +399,9 @@ func cmdHRandField(c *Ctx, args [][]byte) error {
 		}
 	}
 
-	if count == 1 && !withValues {
+	// Redis: without a count argument the reply is a single field; once the
+	// caller passes a count (even 1) the reply is always an array.
+	if !hasCount {
 		c.w.WriteBulkString(pick[0])
 		return nil
 	}

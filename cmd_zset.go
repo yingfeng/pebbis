@@ -336,6 +336,8 @@ parse:
 	if err != nil {
 		return err
 	}
+	// A new element may serve a blocked BZPOPMIN/BZPOPMAX.
+	c.Store.notifyListChanged(c.DB, string(args[0]))
 	if incr != nil {
 		c.w.WriteBulkString(formatFloat(*incr))
 		return nil
@@ -508,6 +510,12 @@ const (
 	infPos = 1e308
 	infNeg = -1e308
 )
+
+// cmdZRevRange is the legacy ZREVRANGE form: ZRANGE key start stop REV.
+// go-redis still issues it for ZRevRange.
+func cmdZRevRange(c *Ctx, args [][]byte) error {
+	return cmdZRange(c, append(append([][]byte{}, args...), []byte("REV")))
+}
 
 func cmdZRange(c *Ctx, args [][]byte) error {
 	if err := c.checkArgLen(len(args), -3); err != nil {

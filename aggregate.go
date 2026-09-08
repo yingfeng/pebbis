@@ -122,13 +122,13 @@ func (s *Store) aggEncoding(db uint16, key string, typ byte) (obj storage.Object
 	return obj, exp, true, nil
 }
 
-// writeAggCount updates just the element counter in a sparse header.
-func (s *Store) writeAggCount(db uint16, key string, typ byte, count int, head, tail, expireAt, origExpire int64) error {
-	payload := storage.EncodeSparseHeader(typ, count, head, tail)
-	return s.putValue(db, key, typ, payload, expireAt, origExpire)
-}
+// writeAggCount was removed: the sparse header is now written atomically together
+// with the element writes in the same batch (see saveAgg / hashSetSparse /
+// setAddSparse / zAddSparse), so a sparse collection always commits as one unit.
 
 func (s *Store) scanHash(db uint16, key string) (map[string][]byte, error) {
+	s.aggMu.RLock()
+	defer s.aggMu.RUnlock()
 	out := map[string][]byte{}
 	prefix := storage.ElemPrefix(storage.SegHash, db, key)
 	err := s.eng.Scan(prefix, func(k, v []byte) error {
@@ -139,6 +139,8 @@ func (s *Store) scanHash(db uint16, key string) (map[string][]byte, error) {
 }
 
 func (s *Store) scanSet(db uint16, key string) (map[string]struct{}, error) {
+	s.aggMu.RLock()
+	defer s.aggMu.RUnlock()
 	out := map[string]struct{}{}
 	prefix := storage.ElemPrefix(storage.SegSet, db, key)
 	err := s.eng.ScanKeys(prefix, func(k []byte) error {
@@ -149,6 +151,8 @@ func (s *Store) scanSet(db uint16, key string) (map[string]struct{}, error) {
 }
 
 func (s *Store) scanZSet(db uint16, key string) (map[string]float64, error) {
+	s.aggMu.RLock()
+	defer s.aggMu.RUnlock()
 	out := map[string]float64{}
 	prefix := storage.ElemPrefix(storage.SegZSetM, db, key)
 	err := s.eng.Scan(prefix, func(k, v []byte) error {
@@ -166,6 +170,8 @@ func (s *Store) scanZSet(db uint16, key string) (map[string]float64, error) {
 }
 
 func (s *Store) scanList(db uint16, key string) ([]string, []int64, error) {
+	s.aggMu.RLock()
+	defer s.aggMu.RUnlock()
 	var elems []string
 	var seqs []int64
 	prefix := storage.ElemPrefix(storage.SegList, db, key)
@@ -187,35 +193,76 @@ func (s *Store) scanList(db uint16, key string) ([]string, []int64, error) {
 
 // saveAgg writes the aggregate back, choosing the representation and writing
 // only the changed elements when the collection is sparse.
+//
+// A sparse collection is stored as one key per element plus a header. A full read
+// (HGETALL, HSCAN, SMEMBERS, ZRANGE, ...) reconstructs it by scanning every
+// element key, so a reader must never observe a half-written collection. To
+// guarantee that, every element write and the header are staged into a SINGLE
+// batch and committed atomically: from any reader's perspective the collection
+// flips from the old state to the new one in one step, never a torn in-between.
 func (s *Store) saveAgg(db uint16, key string, a *agg) error {
+	// Serialise against a concurrent element scan (readers hold RLock). The whole
+	// commit below - elements and header - is one atomic batch, but the scan must
+	// not observe it mid-apply.
+	s.aggMu.Lock()
+	defer s.aggMu.Unlock()
+
 	wantSparse := !fitsInline(a)
 
-	// Inline stays inline: one key, one write.
+	// Inline stays inline: one key, one atomic batch. When demoting from sparse
+	// we drop the per-element keys and write the inline value in the same batch.
 	if !wantSparse {
+		batch := s.eng.Batch()
 		if a.sparse {
-			// Convert back down: drop the per-element keys.
-			if err := s.dropElems(db, key, a.typ); err != nil {
+			if err := dropElemsBatch(batch, db, key, a.typ); err != nil {
+				batch.Close()
 				return err
 			}
 			a.sparse = false
 		}
 		payload := encodeInline(a)
-		return s.putValue(db, key, a.typ, payload, a.expireAt, a.origExpire)
+		if err := putValueBatch(batch, db, key, a.typ, payload, a.expireAt, a.origExpire); err != nil {
+			batch.Close()
+			return err
+		}
+		if err := s.eng.Apply(batch); err != nil {
+			batch.Close()
+			return err
+		}
+		batch.Close()
+		s.dict.Set(db, key, a.typ, a.expireAt, payload)
+		return nil
 	}
 
-	// Sparse: write the header plus the delta.
+	// Sparse: stage every element write and the header into one batch so the
+	// whole collection commits atomically.
+	batch := s.eng.Batch()
+	seg, _ := storage.SegmentFor(a.typ)
 	if !a.sparse {
 		// Promote from inline: everything is new.
 		a.sparse = true
-		if err := s.writeAggElems(db, key, a, nil); err != nil {
+		if err := writeElemsBatch(batch, seg, db, key, a); err != nil {
+			batch.Close()
 			return err
 		}
 	} else {
-		if err := s.diffAggElems(db, key, a); err != nil {
+		if err := diffElemsBatch(batch, seg, db, key, a); err != nil {
+			batch.Close()
 			return err
 		}
 	}
-	return s.writeAggHeader(db, key, a)
+	header := storage.EncodeSparseHeader(a.typ, a.len(), a.head, a.tail)
+	if err := putValueBatch(batch, db, key, a.typ, header, a.expireAt, a.origExpire); err != nil {
+		batch.Close()
+		return err
+	}
+	if err := s.eng.Apply(batch); err != nil {
+		batch.Close()
+		return err
+	}
+	batch.Close()
+	s.dict.Set(db, key, a.typ, a.expireAt, header)
+	return nil
 }
 
 // fitsInline reports whether the collection should stay in the inline form.
@@ -274,11 +321,45 @@ func encodeInline(a *agg) []byte {
 	return nil
 }
 
-// writeAggHeader persists the sparse header and refreshes the index.
-func (s *Store) writeAggHeader(db uint16, key string, a *agg) error {
-	count := a.len()
-	payload := storage.EncodeSparseHeader(a.typ, count, a.head, a.tail)
-	return s.putValue(db, key, a.typ, payload, a.expireAt, a.origExpire)
+// putValueBatch stages a value write plus the matching expiry-index maintenance
+// into an existing batch (mirroring putValue, but without committing). The header
+// of a sparse aggregate is just another value, so this lets saveAgg and the
+// incremental sparse writers commit elements and header as one atomic unit.
+func putValueBatch(batch *storage.Batch, db uint16, key string, typ uint8, val []byte, expireAtMs, prevExpire int64) error {
+	if err := batch.Set(storage.EncodeDataKey(db, key), storage.EncodeValue(typ, expireAtMs, val)); err != nil {
+		return err
+	}
+	if prevExpire != 0 && prevExpire != expireAtMs {
+		if err := batch.Delete(storage.EncodeExpireKey(prevExpire, db, key)); err != nil {
+			return err
+		}
+	}
+	if expireAtMs != 0 && expireAtMs != prevExpire {
+		if err := batch.Set(storage.EncodeExpireKey(expireAtMs, db, key), nil); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// dropElemsBatch stages the deletion of every per-element key of a collection
+// into an existing batch.
+func dropElemsBatch(batch *storage.Batch, db uint16, key string, typ byte) error {
+	seg, ok := storage.SegmentFor(typ)
+	if !ok {
+		return nil
+	}
+	prefix := storage.ElemPrefix(seg, db, key)
+	if err := batch.DeleteRange(prefix, prefixEnd(prefix)); err != nil {
+		return err
+	}
+	if typ == config.TypeZSet {
+		sp := storage.ScorePrefix(db, key)
+		if err := batch.DeleteRange(sp, prefixEnd(sp)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (a *agg) len() int {
@@ -295,12 +376,8 @@ func (a *agg) len() int {
 	return 0
 }
 
-// writeAggElems writes every element of a freshly promoted sparse collection.
-func (s *Store) writeAggElems(db uint16, key string, a *agg, _ map[string]bool) error {
-	batch := s.eng.Batch()
-	defer batch.Close()
-	seg, _ := storage.SegmentFor(a.typ)
-
+// writeElemsBatch stages every element of a sparse collection into batch.
+func writeElemsBatch(batch *storage.Batch, seg byte, db uint16, key string, a *agg) error {
 	switch a.typ {
 	case config.TypeHash:
 		for f, v := range a.hash {
@@ -341,15 +418,12 @@ func (s *Store) writeAggElems(db uint16, key string, a *agg, _ map[string]bool) 
 			a.tail = a.head + int64(len(a.list)) - 1
 		}
 	}
-	return s.eng.Apply(batch)
+	return nil
 }
 
-// diffAggElems writes only what changed relative to the loaded snapshot.
-func (s *Store) diffAggElems(db uint16, key string, a *agg) error {
-	batch := s.eng.Batch()
-	defer batch.Close()
-	seg, _ := storage.SegmentFor(a.typ)
-
+// diffElemsBatch stages only the elements that changed relative to the loaded
+// snapshot into batch.
+func diffElemsBatch(batch *storage.Batch, seg byte, db uint16, key string, a *agg) error {
 	switch a.typ {
 	case config.TypeHash:
 		for f := range a.origHash {
@@ -417,33 +491,22 @@ func (s *Store) diffAggElems(db uint16, key string, a *agg) error {
 		// deltas; nothing to do here.
 		return nil
 	}
-	return s.eng.Apply(batch)
+	return nil
 }
 
-// dropElems removes every per-element key of a collection being demoted.
+// dropElems removes every per-element key of a collection being demoted or deleted.
 func (s *Store) dropElems(db uint16, key string, typ byte) error {
-	seg, ok := storage.SegmentFor(typ)
-	if !ok {
-		return nil
-	}
-	prefix := storage.ElemPrefix(seg, db, key)
-	if err := s.eng.DeleteRange(prefix, prefixEnd(prefix)); err != nil {
+	batch := s.eng.Batch()
+	defer batch.Close()
+	if err := dropElemsBatch(batch, db, key, typ); err != nil {
 		return err
 	}
-	if typ == config.TypeZSet {
-		sp := storage.ScorePrefix(db, key)
-		if err := s.eng.DeleteRange(sp, prefixEnd(sp)); err != nil {
-			return err
-		}
-	}
-	return nil
+	return s.eng.Apply(batch)
 }
 
 // deleteAgg removes an aggregate key and all of its elements.
 func (s *Store) deleteAgg(db uint16, key string, typ byte) error {
-	if err := s.dropElems(db, key, typ); err != nil {
-		return err
-	}
+	// deleteKey takes aggMu.Lock and drops the per-element keys as well.
 	_, err := s.deleteKey(db, key)
 	return err
 }

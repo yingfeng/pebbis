@@ -10,16 +10,13 @@ import (
 
 // requiresAuth reports whether connections must authenticate first.
 func (s *Store) requiresAuth() bool {
-	s.cfgMu.RLock()
-	defer s.cfgMu.RUnlock()
-	return s.cfg.RequirePass != ""
+	return s.cfg.Load().RequirePass != ""
 }
 
 // checkPassword compares against the configured password.
 func (s *Store) checkPassword(pass string) bool {
-	s.cfgMu.RLock()
-	defer s.cfgMu.RUnlock()
-	return s.cfg.RequirePass != "" && s.cfg.RequirePass == pass
+	c := s.cfg.Load()
+	return c.RequirePass != "" && c.RequirePass == pass
 }
 
 func cmdAuth(c *Ctx, args [][]byte) error {

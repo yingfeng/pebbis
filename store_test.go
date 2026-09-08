@@ -239,8 +239,8 @@ func TestEvictionPersistMode(t *testing.T) {
 		}
 	}
 
-	if used := s.UsedMemory(); used > int64(s.cfg.MaxMemory)*2 {
-		t.Fatalf("used memory %d greatly exceeds maxmemory %d", used, s.cfg.MaxMemory)
+	if used := s.UsedMemory(); used > int64(s.cfg.Load().MaxMemory)*2 {
+		t.Fatalf("used memory %d greatly exceeds maxmemory %d", used, s.cfg.Load().MaxMemory)
 	}
 	if s.evictor.Evicted() == 0 {
 		t.Fatal("expected some keys to be evicted")

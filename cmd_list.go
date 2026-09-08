@@ -60,14 +60,19 @@ func (s *Store) listPushUnnotified(db uint16, key string, elems []string, left, 
 }
 
 func (s *Store) listPushSparse(db uint16, key string, a *agg, elems []string, left bool) (int64, error) {
+	// Serialise against a concurrent element scan of this key.
+	s.aggMu.Lock()
+	defer s.aggMu.Unlock()
+	batch := s.eng.Batch()
+	defer batch.Close()
 	if !a.sparse {
 		// Promote: materialise the current elements under fresh sequence numbers.
-		if err := s.writeAggElems(db, key, a, nil); err != nil {
+		a.sparse = true
+		seg, _ := storage.SegmentFor(config.TypeList)
+		if err := writeElemsBatch(batch, seg, db, key, a); err != nil {
 			return 0, err
 		}
 	}
-	batch := s.eng.Batch()
-	defer batch.Close()
 
 	for _, e := range elems {
 		var seq int64
@@ -82,14 +87,17 @@ func (s *Store) listPushSparse(db uint16, key string, a *agg, elems []string, le
 			return 0, err
 		}
 	}
+	a.list = append(a.list, elems...)
+	// Commit the new sequence keys together with the updated header in one atomic
+	// batch so a concurrent reader never sees a torn list.
+	header := storage.EncodeSparseHeader(config.TypeList, len(a.list), a.head, a.tail)
+	if err := putValueBatch(batch, db, key, config.TypeList, header, a.expireAt, a.origExpire); err != nil {
+		return 0, err
+	}
 	if err := s.eng.Apply(batch); err != nil {
 		return 0, err
 	}
-	a.sparse = true
-	a.list = append(a.list, elems...)
-	if err := s.writeAggHeader(db, key, a); err != nil {
-		return 0, err
-	}
+	s.dict.Set(db, key, config.TypeList, a.expireAt, header)
 	return int64(len(a.list)), nil
 }
 
@@ -117,18 +125,25 @@ func (s *Store) listPop(db uint16, key string, n int, left bool) ([]string, erro
 
 	if !a.sparse {
 		if len(a.list) == 0 {
-			if _, err := s.deleteKey(db, key); err != nil {
+			if _, err := s.deleteKeyLocked(db, key); err != nil {
 				return nil, err
 			}
 			return out, nil
 		}
+		// saveAgg takes aggMu.Lock itself.
 		if err := s.saveAgg(db, key, a); err != nil {
 			return nil, err
 		}
 		return out, nil
 	}
 
-	// Sparse: drop the sequence keys that were taken.
+	// Sparse: drop the sequence keys that were taken, together with the updated
+	// header, in one atomic batch so a concurrent reader never sees a torn list.
+	// The lock is taken only here (not around the whole function) because the
+	// inline path above delegates to saveAgg, which already locks aggMu and a
+	// Mutex/RWMutex is not reentrant.
+	s.aggMu.Lock()
+	defer s.aggMu.Unlock()
 	batch := s.eng.Batch()
 	defer batch.Close()
 	if left {
@@ -146,16 +161,24 @@ func (s *Store) listPop(db uint16, key string, n int, left bool) ([]string, erro
 			a.tail--
 		}
 	}
-	if err := s.eng.Apply(batch); err != nil {
-		return nil, err
-	}
 	if len(a.list) == 0 {
-		if _, err := s.deleteKey(db, key); err != nil {
+		if err := s.eng.Apply(batch); err != nil {
+			return nil, err
+		}
+		if _, err := s.deleteKeyLocked(db, key); err != nil {
 			return nil, err
 		}
 		return out, nil
 	}
-	return out, s.writeAggHeader(db, key, a)
+	header := storage.EncodeSparseHeader(config.TypeList, len(a.list), a.head, a.tail)
+	if err := putValueBatch(batch, db, key, config.TypeList, header, a.expireAt, a.origExpire); err != nil {
+		return nil, err
+	}
+	if err := s.eng.Apply(batch); err != nil {
+		return nil, err
+	}
+	s.dict.Set(db, key, config.TypeList, a.expireAt, header)
+	return out, nil
 }
 
 func (s *Store) listRange(db uint16, key string, start, stop int) ([]string, error) {
@@ -206,6 +229,9 @@ func (s *Store) listSet(db uint16, key string, index int, val string) error {
 	}
 	a.list[idx] = val
 	if a.sparse {
+		// Serialise against a concurrent element scan of this key.
+		s.aggMu.Lock()
+		defer s.aggMu.Unlock()
 		seq := a.seqs[idx]
 		if err := s.eng.Put(storage.EncodeListSeqKey(db, key, seq), []byte(val)); err != nil {
 			return err

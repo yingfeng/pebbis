@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/redistore/redistore/config"
@@ -22,21 +23,28 @@ type slowEntry struct {
 }
 
 // SlowLog keeps a bounded ring of the slowest commands.
+//
+// maxLen and slowerThan are atomic: record() runs on the hot path for every
+// command and must not contend with CONFIG SET, which mutates them from a
+// client goroutine. The entries ring itself is guarded by mu.
 type SlowLog struct {
 	mu         sync.Mutex
 	entries    []slowEntry
 	nextID     int64
-	maxLen     int
-	slowerThan int64 // microseconds; -1 disables, 0 logs everything
+	maxLen     atomic.Int64
+	slowerThan atomic.Int64 // microseconds; -1 disables, 0 logs everything
 }
 
 func newSlowLog() *SlowLog {
-	return &SlowLog{maxLen: 128, slowerThan: 10000} // 10 ms, Redis' default
+	sl := &SlowLog{}
+	sl.maxLen.Store(128)
+	sl.slowerThan.Store(10000) // 10 ms, Redis' default
+	return sl
 }
 
 // record adds an entry when the command exceeded the threshold.
 func (sl *SlowLog) record(d time.Duration, args []string) {
-	threshold := sl.slowerThan
+	threshold := sl.slowerThan.Load()
 	if threshold < 0 {
 		return
 	}
@@ -53,8 +61,9 @@ func (sl *SlowLog) record(d time.Duration, args []string) {
 		Duration:  us,
 		Args:      args,
 	})
-	if len(sl.entries) > sl.maxLen {
-		sl.entries = sl.entries[len(sl.entries)-sl.maxLen:]
+	maxLen := int(sl.maxLen.Load())
+	if len(sl.entries) > maxLen {
+		sl.entries = sl.entries[len(sl.entries)-maxLen:]
 	}
 }
 
@@ -225,7 +234,8 @@ func cmdObject(c *Ctx, args [][]byte) error {
 		}
 		return nil
 	case "FREQ":
-		if !c.Store.cfg.TracksLFU() {
+		tracksLFU := c.Store.cfg.Load().TracksLFU()
+		if !tracksLFU {
 			return &protoError{"ERR An LFU maxmemory policy is not selected, access frequency not tracked. Please note that when switching between policies at runtime LRU and LFU data will take some time to adjust."}
 		}
 		e, ok := c.Store.dict.Lookup(c.DB, key)
@@ -282,21 +292,17 @@ func cmdDebug(c *Ctx, args [][]byte) error {
 // a restart, and pretending otherwise would be worse than saying no.
 func cmdConfigSet(c *Ctx, name string, value string) error {
 	s := c.Store
-	s.cfgMu.Lock()
-	defer s.cfgMu.Unlock()
-
+	next := *s.cfg.Load()
 	switch strings.ToLower(name) {
 	case "maxmemory":
 		v, err := ParseByteSize(value)
 		if err != nil {
 			return err
 		}
-		s.cfg.MaxMemory = v
+		next.MaxMemory = v
 	case "maxmemory-policy":
-		old := s.cfg.EvictionPolicy
-		s.cfg.EvictionPolicy = parseEvictionPolicy(strings.ToLower(value))
-		if s.cfg.EvictionPolicy == "" {
-			s.cfg.EvictionPolicy = old
+		next.EvictionPolicy = parseEvictionPolicy(strings.ToLower(value))
+		if next.EvictionPolicy == "" {
 			return &protoError{"ERR Unsupported maxmemory-policy"}
 		}
 	case "maxmemory-samples":
@@ -304,34 +310,35 @@ func cmdConfigSet(c *Ctx, name string, value string) error {
 		if err != nil || v <= 0 {
 			return &protoError{"ERR Invalid maxmemory-samples value"}
 		}
-		s.cfg.EvictionSample = v
+		next.EvictionSample = v
 	case "lfu-decay-time":
 		v, err := strconv.Atoi(value)
 		if err != nil || v < 0 {
 			return &protoError{"ERR Invalid lfu-decay-time value"}
 		}
-		s.cfg.LFUDecayMinutes = v
+		next.LFUDecayMinutes = v
 	case "slowlog-log-slower-than":
 		v, err := strconv.ParseInt(value, 10, 64)
 		if err != nil {
 			return &protoError{"ERR Invalid slowlog-log-slower-than value"}
 		}
-		s.slowLog.slowerThan = v
+		s.slowLog.slowerThan.Store(v)
 	case "slowlog-max-len":
 		v, err := strconv.Atoi(value)
 		if err != nil || v <= 0 {
 			return &protoError{"ERR Invalid slowlog-max-len value"}
 		}
-		s.slowLog.maxLen = v
+		s.slowLog.maxLen.Store(int64(v))
 	case "lua-time-limit":
 		v, err := strconv.Atoi(value)
 		if err != nil || v < 0 {
 			return &protoError{"ERR Invalid lua-time-limit value"}
 		}
-		s.cfg.LuaTimeLimit = v
+		next.LuaTimeLimit = v
 	default:
 		return &protoError{"ERR CONFIG SET is not supported for this parameter"}
 	}
+	s.cfg.Store(&next)
 	c.writeOK()
 	return nil
 }

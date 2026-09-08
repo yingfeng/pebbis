@@ -1,7 +1,10 @@
 package compat
 
 import (
+	"fmt"
 	"net"
+	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -249,6 +252,151 @@ func TestConfigSetRuntime(t *testing.T) {
 
 	assertErr(t, do(t, c, "CONFIG", "SET", "databases", "32"), "not supported")
 	assertErr(t, do(t, c, "CONFIG", "SET", "maxmemory", "not-a-number"), "Invalid")
+}
+
+// TestConfigSetConcurrentWithCommands hammers CONFIG SET (slowlog + eviction
+// knobs) while other goroutines run ordinary commands. The slowlog thresholds
+// and the eviction knobs are read on the hot path of every command without a
+// mutex, so a race here means the atomic-config plumbing is broken. Under
+// -race this fails loudly if the read/write sites are not synchronised.
+//
+// Each goroutine uses its own connection: the RESP client is not safe for
+// concurrent use, but the server's config access is, and that is what we test.
+func TestConfigSetConcurrentWithCommands(t *testing.T) {
+	c := setup(t)
+
+	const writers = 8
+	const rounds = 2000
+	var wg sync.WaitGroup
+
+	// Mutators: flip slowlog + eviction knobs back and forth.
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			mc, mraw, err := dialAnother(t, c)
+			if err != nil {
+				t.Errorf("dial mutator: %v", err)
+				return
+			}
+			defer mraw.Close()
+			for r := 0; r < rounds; r++ {
+				_ = do(t, mc, "CONFIG", "SET", "slowlog-log-slower-than", strconv.Itoa(r%2*1000-1))
+				_ = do(t, mc, "CONFIG", "SET", "slowlog-max-len", strconv.Itoa((r%8)+1))
+				_ = do(t, mc, "CONFIG", "SET", "maxmemory-samples", strconv.Itoa((r%9)+1))
+			}
+		}()
+	}
+
+	// Workers: ordinary traffic that touches the slowlog record() hot path and
+	// the eviction snapshot.
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			wc, wraw, err := dialAnother(t, c)
+			if err != nil {
+				t.Errorf("dial worker: %v", err)
+				return
+			}
+			defer wraw.Close()
+			for r := 0; r < rounds; r++ {
+				_ = do(t, wc, "SET", "k"+strconv.Itoa(id), "v")
+				_ = do(t, wc, "GET", "k"+strconv.Itoa(id))
+				_ = do(t, wc, "SLOWLOG", "LEN")
+			}
+		}(i)
+	}
+
+	wg.Wait()
+}
+
+// dialAnother opens a fresh connection to the same server as c, using the
+// address book maintained by setupWith. It returns the RESP client and the
+// underlying net.Conn (which the caller must Close, since resp.Conn has no
+// Close of its own).
+func dialAnother(t *testing.T, c *resp.Conn) (*resp.Conn, net.Conn, error) {
+	t.Helper()
+	addr, ok := addrs.Load(c)
+	if !ok {
+		return nil, nil, fmt.Errorf("no address recorded for client")
+	}
+	conn, err := net.Dial("tcp", addr.(string))
+	if err != nil {
+		return nil, nil, err
+	}
+	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+	return resp.NewConn(conn), conn, nil
+}
+
+// TestScanCollectionPagination verifies that HSCAN/SSCAN/ZSCAN honour COUNT and
+// return a real, resumable cursor (previously they ignored COUNT and always
+// returned the whole collection with cursor 0). A full iteration following the
+// cursor must still yield every element exactly once.
+//
+// stride is the number of array elements per logical entry: 2 for HSCAN/ZSCAN
+// (field,value / member,score), 1 for SSCAN (member).
+func TestScanCollectionPagination(t *testing.T) {
+	c := setup(t)
+
+	for i := 0; i < 25; i++ {
+		_ = do(t, c, "HSET", "h", fmt.Sprintf("f%02d", i), "v")
+		_ = do(t, c, "SADD", "s", fmt.Sprintf("m%02d", i))
+		_ = do(t, c, "ZADD", "z", strconv.Itoa(i), fmt.Sprintf("m%02d", i))
+	}
+
+	// collect walks the cursor to 0 and returns the set of logical entries.
+	// The cursor is the argument right after the key, before any MATCH/COUNT.
+	collect := func(stride int, cmd ...string) map[string]int {
+		seen := map[string]int{}
+		cursor := "0"
+		for {
+			args := append([]string{cmd[0], cmd[1], cursor}, cmd[2:]...)
+			v := do(t, c, args...)
+			if v.Type() == resp.Error {
+				t.Fatalf("command %v returned error: %s", args, v.String())
+			}
+			res := v.Array()
+			cursor = res[0].String()
+			elems := res[1].Array()
+			for i := 0; i+stride <= len(elems); i += stride {
+				seen[elems[i].String()]++
+			}
+			if cursor == "0" {
+				break
+			}
+		}
+		return seen
+	}
+
+	if got := len(collect(2, "HSCAN", "h")); got != 25 {
+		t.Errorf("HSCAN collected %d fields, want 25", got)
+	}
+	if got := len(collect(1, "SSCAN", "s")); got != 25 {
+		t.Errorf("SSCAN collected %d members, want 25", got)
+	}
+	if got := len(collect(2, "ZSCAN", "z")); got != 25 {
+		t.Errorf("ZSCAN collected %d members, want 25", got)
+	}
+
+	// COUNT 5 on 25 fields must paginate: first page returns ≤5 fields (≤10 array
+	// elements) and a non-zero cursor.
+	v := do(t, c, "HSCAN", "h", "0", "COUNT", "5")
+	if v.Type() == resp.Error {
+		t.Fatalf("HSCAN COUNT 5 returned error: %s", v.String())
+	}
+	res := v.Array()
+	if got := len(res[1].Array()); got != 10 {
+		t.Errorf("HSCAN COUNT 5 first page returned %d array elems, want 10", got)
+	}
+	if res[0].String() == "0" {
+		t.Error("HSCAN COUNT 5 should not finish in one page with 25 fields")
+	}
+
+	// COUNT with MATCH: f1* matches f10..f19 (10 fields).
+	if got := len(collect(2, "HSCAN", "h", "MATCH", "f1*")); got != 10 {
+		t.Errorf("HSCAN MATCH f1* collected %d, want 10", got)
+	}
 }
 
 func TestObjectIntrospection(t *testing.T) {

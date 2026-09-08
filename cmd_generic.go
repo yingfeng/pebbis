@@ -831,6 +831,37 @@ func cmdScan(c *Ctx, args [][]byte) error {
 	return nil
 }
 
+// scanPageReply writes a [cursor, elements] SCAN-style reply from a fully
+// materialised, MATCH-filtered flat array. cursor is the array-element offset to
+// resume from (a decimal string, exactly like SCAN); count is the maximum number
+// of array elements to return this call. An unknown or out-of-range cursor
+// restarts from the beginning, which matches SCAN's tolerant semantics and lets
+// every client (go-redis, redis-cli, jedis) resume correctly.
+func scanPageReply(w Writer, flat []string, cursor uint64, count int) {
+	if cursor >= uint64(len(flat)) {
+		w.WriteArray(2)
+		w.WriteBulkString("0")
+		w.WriteArray(0)
+		return
+	}
+	end := cursor + uint64(count)
+	// end<cursor means the addition wrapped past uint64; clamp instead.
+	if end > uint64(len(flat)) || end < cursor {
+		end = uint64(len(flat))
+	}
+	page := flat[cursor:end]
+	next := end
+	if next >= uint64(len(flat)) {
+		next = 0
+	}
+	w.WriteArray(2)
+	w.WriteBulkString(strconv.FormatUint(next, 10))
+	w.WriteArray(len(page))
+	for _, s := range page {
+		w.WriteBulkString(s)
+	}
+}
+
 func cmdTouch(c *Ctx, args [][]byte) error {
 	if err := c.checkArgLen(len(args), -1); err != nil {
 		return err

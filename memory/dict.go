@@ -94,7 +94,7 @@ func (d *dbShards) randomShard() *shard {
 // dict scales with the number of keys, not with the volume of data, so
 // MaxMemory bounds something we can actually measure.
 type Dict struct {
-	cfg     *config.Config
+	cfg     *atomic.Pointer[config.Config]
 	clock   *Clock
 	dbCount int
 	dbs     []atomic.Pointer[dbShards]
@@ -103,8 +103,8 @@ type Dict struct {
 }
 
 // NewDict creates an empty dict of cfg.Databases logical databases.
-func NewDict(cfg *config.Config, clock *Clock) *Dict {
-	n := cfg.Databases
+func NewDict(cfg *atomic.Pointer[config.Config], clock *Clock) *Dict {
+	n := cfg.Load().Databases
 	if n <= 0 {
 		n = 16
 	}
@@ -127,7 +127,7 @@ func (d *Dict) dbShards(db uint16) *dbShards {
 	if p := d.dbs[db].Load(); p != nil {
 		return p
 	}
-	fresh := newDBShards(d.cfg.ShardCount)
+	fresh := newDBShards(d.cfg.Load().ShardCount)
 	if d.dbs[db].CompareAndSwap(nil, fresh) {
 		return fresh
 	}
@@ -157,7 +157,7 @@ func (d *Dict) Lookup(db uint16, key string) (*Entry, bool) {
 // so that read paths can skip it when no eviction policy needs the data.
 func (d *Dict) Touch(db uint16, key string) {
 	clock := d.clock.LRUClock()
-	decay := d.cfg.LFUDecayMinutes
+	decay := d.cfg.Load().LFUDecayMinutes
 	s := d.dbShards(db).shardFor(key)
 	s.mu.RLock()
 	if e, ok := s.m[key]; ok {
@@ -176,7 +176,7 @@ func (d *Dict) Set(db uint16, key string, typ uint8, expireAt int64, payload []b
 	clock := d.clock.LRUClock()
 
 	s.mu.Lock()
-	e := newEntry(key, typ, expireAt, payload, d.cfg.InlineValueMaxSize, clock)
+	e := newEntry(key, typ, expireAt, payload, d.cfg.Load().InlineValueMaxSize, clock)
 	e.lru = (uint32(lfuInitVal) << LRUClockBits) | (clock & lruClockMask)
 
 	_, existed := s.m[key]
@@ -374,7 +374,7 @@ func (d *Dict) Keys(db uint16) []string {
 
 // Flush drops everything in a logical database.
 func (d *Dict) Flush(db uint16) {
-	d.dbs[db].Store(newDBShards(d.cfg.ShardCount))
+	d.dbs[db].Store(newDBShards(d.cfg.Load().ShardCount))
 	d.recomputeUsed()
 }
 

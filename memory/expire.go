@@ -18,7 +18,7 @@ type Expirer struct {
 	eng   *storage.Engine
 	dict  *Dict
 	clock *Clock
-	cfg   *config.Config
+	cfg   *atomic.Pointer[config.Config]
 
 	expired atomic.Int64
 	// enabled toggles the active expiry cycle (DEBUG SET-ACTIVE-EXPIRE).
@@ -26,8 +26,10 @@ type Expirer struct {
 	enabled atomic.Bool
 }
 
-// NewExpirer builds an expirer over eng and dict.
-func NewExpirer(eng *storage.Engine, dict *Dict, clock *Clock, cfg *config.Config) *Expirer {
+// NewExpirer builds an expirer over eng and dict. cfg is the store-wide
+// atomically-swapped configuration so a CONFIG SET that lands mid-cycle is
+// picked up on the next tick rather than torn.
+func NewExpirer(eng *storage.Engine, dict *Dict, clock *Clock, cfg *atomic.Pointer[config.Config]) *Expirer {
 	x := &Expirer{eng: eng, dict: dict, clock: clock, cfg: cfg}
 	x.enabled.Store(true)
 	return x
@@ -41,7 +43,7 @@ func (x *Expirer) Expired() int64 { return x.expired.Load() }
 
 // Run drives the active expiry cycle until stop is closed.
 func (x *Expirer) Run(stop <-chan struct{}) {
-	t := time.NewTicker(x.cfg.ExpireCycleInterval)
+	t := time.NewTicker(x.cfg.Load().ExpireCycleInterval)
 	defer t.Stop()
 	for {
 		select {
@@ -63,7 +65,7 @@ func (x *Expirer) Run(stop <-chan struct{}) {
 // never monopolises a CPU.
 func (x *Expirer) Cycle() (int, error) {
 	now := x.clock.NowMilli()
-	deadline := time.Now().Add(x.cfg.ExpireCycleBudget)
+	deadline := time.Now().Add(x.cfg.Load().ExpireCycleBudget)
 
 	batch := x.eng.Batch()
 	defer batch.Close()
@@ -91,7 +93,7 @@ func (x *Expirer) Cycle() (int, error) {
 			}
 			x.dict.Delete(db, key)
 			collected++
-			if collected >= x.cfg.ExpireBatch || time.Now().After(deadline) {
+			if collected >= x.cfg.Load().ExpireBatch || time.Now().After(deadline) {
 				return storage.ErrStop
 			}
 			return nil

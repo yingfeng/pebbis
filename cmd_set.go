@@ -47,6 +47,9 @@ func (s *Store) setAdd(db uint16, key string, members []string) (int64, error) {
 
 // setAddSparse adds members to a sparse set without scanning the rest.
 func (s *Store) setAddSparse(db uint16, key string, members []string, curCount, expireAt int64) (int64, error) {
+	// Serialise against a concurrent element scan of this key.
+	s.aggMu.Lock()
+	defer s.aggMu.Unlock()
 	seg, _ := storage.SegmentFor(config.TypeSet)
 	batch := s.eng.Batch()
 	defer batch.Close()
@@ -70,12 +73,16 @@ func (s *Store) setAddSparse(db uint16, key string, members []string, curCount, 
 	if added == 0 {
 		return 0, nil
 	}
+	// Commit the new members together with the updated header in one atomic batch
+	// so a concurrent reader scanning the member keys never sees a torn set.
+	header := storage.EncodeSparseHeader(config.TypeSet, int(curCount+added), 0, 0)
+	if err := putValueBatch(batch, db, key, config.TypeSet, header, expireAt, expireAt); err != nil {
+		return 0, err
+	}
 	if err := s.eng.Apply(batch); err != nil {
 		return 0, err
 	}
-	if err := s.writeAggCount(db, key, config.TypeSet, int(curCount+added), 0, 0, expireAt, expireAt); err != nil {
-		return 0, err
-	}
+	s.dict.Set(db, key, config.TypeSet, expireAt, header)
 	return added, nil
 }
 
@@ -598,16 +605,24 @@ func cmdSInterCard(c *Ctx, args [][]byte) error {
 
 // ---------- set: SSCAN ----------
 
-// cmdSScan implements SSCAN: like HSCAN, one call returns the full (sorted)
-// member iteration with cursor 0.
+// cmdSScan implements SSCAN. The member set is fully materialised, sorted and
+// paginated by COUNT (COUNT counts members, one array element each). The cursor
+// is a decimal array-element offset; an unknown or out-of-range cursor restarts
+// from the beginning, which matches SCAN's tolerant semantics.
 func cmdSScan(c *Ctx, args [][]byte) error {
 	if err := c.checkArgLen(len(args), -2); err != nil {
 		return err
 	}
-	if _, err := strconv.ParseUint(string(args[1]), 10, 64); err != nil {
+	// A sparse set is stored as one key per member. saveAgg / setAddSparse commit
+	// the members and the header in a single atomic batch, so a concurrent SADD
+	// never leaves the collection half-written: this scan observes either the old or
+	// the new state, never a torn in-between one.
+	start, err := strconv.ParseUint(string(args[1]), 10, 64)
+	if err != nil {
 		return &protoError{"ERR invalid cursor"}
 	}
 	var matchFn func(string) bool
+	count := 10
 	rest := args[2:]
 	for len(rest) > 0 {
 		switch strings.ToUpper(string(rest[0])) {
@@ -632,6 +647,7 @@ func cmdSScan(c *Ctx, args [][]byte) error {
 			if cnt <= 0 {
 				return ErrSyntax
 			}
+			count = cnt
 			rest = rest[2:]
 		default:
 			return ErrSyntax
@@ -655,11 +671,7 @@ func cmdSScan(c *Ctx, args [][]byte) error {
 			out = append(out, m)
 		}
 	}
-	c.w.WriteArray(2)
-	c.w.WriteBulkString("0")
-	c.w.WriteArray(len(out))
-	for _, m := range out {
-		c.w.WriteBulkString(m)
-	}
+	// COUNT counts members, i.e. one array element each.
+	scanPageReply(c.w, out, start, count)
 	return nil
 }

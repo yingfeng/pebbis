@@ -54,6 +54,9 @@ func (s *Store) hashSet(db uint16, key string, pairs [][2][]byte, nx bool) (int6
 
 // hashSetSparse writes only the given fields into a sparse hash.
 func (s *Store) hashSetSparse(db uint16, key string, pairs [][2][]byte, nx bool, curCount, expireAt int64) (int64, error) {
+	// Serialise against a concurrent element scan of this key.
+	s.aggMu.Lock()
+	defer s.aggMu.Unlock()
 	seg, _ := storage.SegmentFor(config.TypeHash)
 	batch := s.eng.Batch()
 	defer batch.Close()
@@ -80,14 +83,16 @@ func (s *Store) hashSetSparse(db uint16, key string, pairs [][2][]byte, nx bool,
 	if batch.Empty() {
 		return 0, nil
 	}
+	// Commit the new elements together with the updated header in one atomic batch
+	// so a concurrent reader scanning the element keys never sees a torn set.
+	header := storage.EncodeSparseHeader(config.TypeHash, int(curCount+added), 0, 0)
+	if err := putValueBatch(batch, db, key, config.TypeHash, header, expireAt, expireAt); err != nil {
+		return 0, err
+	}
 	if err := s.eng.Apply(batch); err != nil {
 		return 0, err
 	}
-	if added > 0 {
-		if err := s.writeAggCount(db, key, config.TypeHash, int(curCount+added), 0, 0, expireAt, expireAt); err != nil {
-			return 0, err
-		}
-	}
+	s.dict.Set(db, key, config.TypeHash, expireAt, header)
 	return added, nil
 }
 
@@ -468,19 +473,26 @@ var _ = sort.Strings
 
 // ---------- hash: HSCAN / HINCRBYFLOAT ----------
 
-// cmdHScan implements HSCAN. The aggregate is fully materialised in memory, so
-// like miniredis a single call returns every matching field and terminates the
-// iteration with cursor 0 (real Redis paginates by dict bucket, but the
-// element set — all real Redis guarantees — is identical).
+// cmdHScan implements HSCAN. The aggregate is fully materialised in memory and
+// sorted, then paginated by COUNT like real Redis (COUNT is a hint for how many
+// field-value pairs to return per call). The cursor is a decimal array-element
+// offset; an unknown or out-of-range cursor restarts from the beginning, which
+// matches SCAN's tolerant semantics.
 func cmdHScan(c *Ctx, args [][]byte) error {
 	if err := c.checkArgLen(len(args), -2); err != nil {
 		return err
 	}
-	if _, err := strconv.ParseUint(string(args[1]), 10, 64); err != nil {
+	// A sparse hash is stored as one key per field. saveAgg / hashSetSparse commit
+	// the elements and the header in a single atomic batch (see aggregate.go), so a
+	// concurrent HSET never leaves the collection half-written: this scan observes
+	// either the old or the new state, never a torn in-between one.
+	start, err := strconv.ParseUint(string(args[1]), 10, 64)
+	if err != nil {
 		return &protoError{"ERR invalid cursor"}
 	}
 	var matchFn func(string) bool
 	noValues := false
+	count := 10
 	rest := args[2:]
 	for len(rest) > 0 {
 		switch strings.ToUpper(string(rest[0])) {
@@ -505,6 +517,7 @@ func cmdHScan(c *Ctx, args [][]byte) error {
 			if cnt <= 0 {
 				return ErrSyntax
 			}
+			count = cnt
 			rest = rest[2:]
 		case "NOVALUES":
 			noValues = true
@@ -530,12 +543,8 @@ func cmdHScan(c *Ctx, args [][]byte) error {
 			flat = append(flat, string(a.hash[f]))
 		}
 	}
-	c.w.WriteArray(2)
-	c.w.WriteBulkString("0")
-	c.w.WriteArray(len(flat))
-	for _, s := range flat {
-		c.w.WriteBulkString(s)
-	}
+	// COUNT counts field-value pairs, i.e. 2 array elements each.
+	scanPageReply(c.w, flat, start, count*2)
 	return nil
 }
 

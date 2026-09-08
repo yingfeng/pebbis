@@ -117,6 +117,9 @@ func (s *Store) zAdd(db uint16, key string, members []storage.Member, opt ZAddOp
 
 // zAddSparse adds or updates members of a sparse sorted set in place.
 func (s *Store) zAddSparse(db uint16, key string, members []storage.Member, opt ZAddOption, curCount, expireAt int64) (int64, *float64, error) {
+	// Serialise against a concurrent element scan of this key.
+	s.aggMu.Lock()
+	defer s.aggMu.Unlock()
 	seg, _ := storage.SegmentFor(config.TypeZSet)
 	batch := s.eng.Batch()
 	defer batch.Close()
@@ -168,14 +171,16 @@ func (s *Store) zAddSparse(db uint16, key string, members []storage.Member, opt 
 	if batch.Empty() {
 		return 0, nil, nil
 	}
+	// Commit the new members together with the updated header in one atomic batch
+	// so a concurrent reader scanning the member keys never sees a torn set.
+	header := storage.EncodeSparseHeader(config.TypeZSet, int(curCount+added), 0, 0)
+	if err := putValueBatch(batch, db, key, config.TypeZSet, header, expireAt, expireAt); err != nil {
+		return 0, nil, err
+	}
 	if err := s.eng.Apply(batch); err != nil {
 		return 0, nil, err
 	}
-	if added > 0 {
-		if err := s.writeAggCount(db, key, config.TypeZSet, int(curCount+added), 0, 0, expireAt, expireAt); err != nil {
-			return 0, nil, err
-		}
-	}
+	s.dict.Set(db, key, config.TypeZSet, expireAt, header)
 	if opt.CH {
 		return changed, nil, nil
 	}
@@ -924,17 +929,26 @@ func formatFloat(f float64) string {
 
 // ---------- zset: ZSCAN ----------
 
-// cmdZScan implements ZSCAN: like HSCAN, one call returns the full (sorted)
-// member/score iteration with cursor 0.
+// cmdZScan implements ZSCAN. The member set is fully materialised, sorted by
+// member (Redis orders elements lexicographically when scores tie) and paginated
+// by COUNT (COUNT counts member-score pairs, two array elements each). The cursor
+// is a decimal array-element offset; an unknown or out-of-range cursor restarts
+// from the beginning, which matches SCAN's tolerant semantics.
 func cmdZScan(c *Ctx, args [][]byte) error {
 	if err := c.checkArgLen(len(args), -2); err != nil {
 		return err
 	}
-	if _, err := strconv.ParseUint(string(args[1]), 10, 64); err != nil {
+	// A sparse zset is stored as one key per member plus a score index.
+	// saveAgg / zAddSparse commit the members and the header in a single atomic
+	// batch, so a concurrent ZADD never leaves the collection half-written: this
+	// scan observes either the old or the new state, never a torn in-between one.
+	start, err := strconv.ParseUint(string(args[1]), 10, 64)
+	if err != nil {
 		return &protoError{"ERR invalid cursor"}
 	}
 	var matchFn func(string) bool
 	noScores := false
+	count := 10
 	rest := args[2:]
 	for len(rest) > 0 {
 		switch strings.ToUpper(string(rest[0])) {
@@ -959,6 +973,7 @@ func cmdZScan(c *Ctx, args [][]byte) error {
 			if cnt <= 0 {
 				return ErrSyntax
 			}
+			count = cnt
 			rest = rest[2:]
 		case "NOSCORES":
 			noScores = true
@@ -989,11 +1004,7 @@ func cmdZScan(c *Ctx, args [][]byte) error {
 			flat = append(flat, formatFloat(a.zset[m]))
 		}
 	}
-	c.w.WriteArray(2)
-	c.w.WriteBulkString("0")
-	c.w.WriteArray(len(flat))
-	for _, s := range flat {
-		c.w.WriteBulkString(s)
-	}
+	// COUNT counts member-score pairs, i.e. 2 array elements each.
+	scanPageReply(c.w, flat, start, count*2)
 	return nil
 }

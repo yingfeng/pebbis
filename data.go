@@ -204,7 +204,16 @@ func (s *Store) putValue(db uint16, key string, typ uint8, val []byte, expireAtM
 
 // deleteKey removes a key from both the index and Pebble. Aggregates also drop
 // their per-element keys, otherwise the elements would outlive the key itself.
+// It serialises against a concurrent element scan (readers hold RLock).
 func (s *Store) deleteKey(db uint16, key string) (bool, error) {
+	s.aggMu.Lock()
+	defer s.aggMu.Unlock()
+	return s.deleteKeyLocked(db, key)
+}
+
+// deleteKeyLocked is deleteKey without the aggregate lock; used when the caller
+// already holds aggMu (e.g. listPop emptying a sparse list).
+func (s *Store) deleteKeyLocked(db uint16, key string) (bool, error) {
 	typ, found, err := s.typeOf(db, key)
 	if err != nil {
 		return false, err
@@ -448,7 +457,7 @@ func (s *Store) keyAlive(db uint16, key string, nowMs int64) bool {
 
 // touch records an access, but only when a policy needs the metadata.
 func (s *Store) touch(db uint16, key string) {
-	if s.cfg.TracksLRU() || s.cfg.TracksLFU() {
+	if s.cfg.Load().TracksLRU() || s.cfg.Load().TracksLFU() {
 		s.dict.Touch(db, key)
 	}
 }

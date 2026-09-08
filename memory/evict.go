@@ -23,7 +23,7 @@ type candidate struct {
 // nothing on the read path and, with a handful of samples per round, lands
 // within a few percent of true LRU hit rate on realistic workloads.
 type Evictor struct {
-	cfg  *config.Config
+	cfg  *atomic.Pointer[config.Config]
 	dict *Dict
 	// deleteFn removes the persisted copy. It is only invoked in
 	// config.EvictCache mode; EvictPersist leaves the data on disk.
@@ -33,11 +33,38 @@ type Evictor struct {
 }
 
 // NewEvictor builds an evictor over dict.
-func NewEvictor(cfg *config.Config, dict *Dict, deleteFn func(db uint16, key string) error) *Evictor {
+func NewEvictor(cfg *atomic.Pointer[config.Config], dict *Dict, deleteFn func(db uint16, key string) error) *Evictor {
 	if deleteFn == nil {
 		deleteFn = func(uint16, string) error { return nil }
 	}
 	return &Evictor{cfg: cfg, dict: dict, deleteFn: deleteFn}
+}
+
+// evictSnapshot is a consistent read of the eviction knobs. It is taken from a
+// single atomic.Load of the store config, so a CONFIG SET that lands mid-round
+// cannot tear the values the round relies on: either the round sees the old
+// config or the new one, never a mix.
+type evictSnapshot struct {
+	enabled      bool
+	maxMemory    uint64
+	targetRatio  float64
+	sample       int
+	mode         config.EvictionMode
+	policy       config.EvictionPolicy
+	volatileOnly bool
+}
+
+func (ev *Evictor) snapshot() evictSnapshot {
+	c := ev.cfg.Load()
+	return evictSnapshot{
+		enabled:      c.EvictionEnabled(),
+		maxMemory:    c.MaxMemory,
+		targetRatio:  c.EvictionTargetRatio,
+		sample:       c.EvictionSample,
+		mode:         c.EvictionMode,
+		policy:       c.EvictionPolicy,
+		volatileOnly: c.VolatileOnly(),
+	}
 }
 
 // Evicted returns the cumulative number of keys evicted.
@@ -47,10 +74,11 @@ func (ev *Evictor) Evicted() int64 { return ev.evicted.Load() }
 // It is called on the write path, so it must stay cheap: it returns as soon as
 // usage is back under target or the round limit is hit.
 func (ev *Evictor) MaybeEvict() {
-	if !ev.cfg.EvictionEnabled() {
+	snap := ev.snapshot()
+	if !snap.enabled {
 		return
 	}
-	target := int64(float64(ev.cfg.MaxMemory) * ev.cfg.EvictionTargetRatio)
+	target := int64(float64(snap.maxMemory) * snap.targetRatio)
 	if ev.dict.Used() <= target {
 		return
 	}
@@ -62,7 +90,7 @@ func (ev *Evictor) MaybeEvict() {
 		if ev.dict.Used() <= target || time.Now().After(deadline) {
 			return
 		}
-		if !ev.evictOne() {
+		if !ev.evictOne(snap) {
 			return // nothing evictable
 		}
 	}
@@ -83,12 +111,12 @@ func (ev *Evictor) Run(stop <-chan struct{}) {
 }
 
 // evictOne samples the policy's worth of keys and removes the best victim.
-func (ev *Evictor) evictOne() bool {
-	c, ok := ev.pick()
+func (ev *Evictor) evictOne(snap evictSnapshot) bool {
+	c, ok := ev.pick(snap)
 	if !ok {
 		return false
 	}
-	if ev.cfg.EvictionMode == config.EvictCache {
+	if snap.mode == config.EvictCache {
 		if err := ev.deleteFn(c.db, c.key); err != nil {
 			return false
 		}
@@ -101,13 +129,13 @@ func (ev *Evictor) evictOne() bool {
 }
 
 // pick returns the best victim among a random sample.
-func (ev *Evictor) pick() (candidate, bool) {
-	samples := ev.sample(ev.cfg.EvictionSample)
+func (ev *Evictor) pick(snap evictSnapshot) (candidate, bool) {
+	samples := ev.sample(snap.sample, snap.volatileOnly)
 	if len(samples) == 0 {
 		return candidate{}, false
 	}
 	best := samples[0]
-	switch ev.cfg.EvictionPolicy {
+	switch snap.policy {
 	case config.AllKeysLRU, config.VolatileLRU:
 		for _, c := range samples[1:] {
 			if c.idle > best.idle {
@@ -137,13 +165,12 @@ func (ev *Evictor) pick() (candidate, bool) {
 // Go randomises the starting point of a map range, so taking the first matching
 // entry of a randomly chosen shard is an unbiased sample - no auxiliary
 // key list needed.
-func (ev *Evictor) sample(n int) []candidate {
+func (ev *Evictor) sample(n int, volatileOnly bool) []candidate {
 	if n <= 0 {
 		n = 5
 	}
 	nowMs := ev.dict.clock.NowMilli()
 	nowClock := ev.dict.clock.LRUClock()
-	volatileOnly := ev.cfg.VolatileOnly()
 
 	out := make([]candidate, 0, n)
 	for db := range ev.dict.dbCount {

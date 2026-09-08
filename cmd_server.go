@@ -41,9 +41,9 @@ func cmdInfo(c *Ctx, args [][]byte) error {
 		b.WriteString("# Memory\r\n")
 		fmt.Fprintf(&b, "used_memory:%d\r\n", s.UsedMemory())
 		fmt.Fprintf(&b, "used_memory_human:%s\r\n", humanBytes(uint64(s.UsedMemory())))
-		fmt.Fprintf(&b, "maxmemory:%d\r\n", s.cfg.MaxMemory)
-		fmt.Fprintf(&b, "maxmemory_human:%s\r\n", humanBytes(s.cfg.MaxMemory))
-		fmt.Fprintf(&b, "maxmemory_policy:%s\r\n", s.cfg.EvictionPolicy)
+		fmt.Fprintf(&b, "maxmemory:%d\r\n", s.cfg.Load().MaxMemory)
+		fmt.Fprintf(&b, "maxmemory_human:%s\r\n", humanBytes(s.cfg.Load().MaxMemory))
+		fmt.Fprintf(&b, "maxmemory_policy:%s\r\n", s.cfg.Load().EvictionPolicy)
 		fmt.Fprintf(&b, "block_cache_memory:%d\r\n", s.BlockCacheMemory())
 		b.WriteString("\r\n")
 	}
@@ -96,17 +96,17 @@ func cmdConfig(c *Ctx, args [][]byte) error {
 			var val string
 			switch name {
 			case "maxmemory":
-				val = strconv.FormatUint(s.cfg.MaxMemory, 10)
+				val = strconv.FormatUint(s.cfg.Load().MaxMemory, 10)
 			case "maxmemory-policy":
-				val = string(s.cfg.EvictionPolicy)
+				val = string(s.cfg.Load().EvictionPolicy)
 			case "maxmemory-samples":
-				val = strconv.Itoa(s.cfg.EvictionSample)
+				val = strconv.Itoa(s.cfg.Load().EvictionSample)
 			case "databases":
 				val = strconv.Itoa(s.DBCount())
 			case "dir":
-				val = s.cfg.Dir
+				val = s.cfg.Load().Dir
 			case "appendfsync":
-				val = string(s.cfg.SyncPolicy)
+				val = string(s.cfg.Load().SyncPolicy)
 			default:
 				continue
 			}

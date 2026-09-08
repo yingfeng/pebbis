@@ -47,9 +47,16 @@ type Stats struct {
 // Nothing here depends on the network layer, which is what makes the embedded
 // use case cheap - see api.go for the direct-call surface.
 type Store struct {
-	cfg  *config.Config
+	cfg  atomic.Pointer[config.Config]
 	eng  *storage.Engine
 	dict *memory.Dict
+	// aggMu serialises a full element scan of a sparse aggregate (used by
+	// HGETALL/HSCAN/SMEMBERS/ZRANGE/...) against the commit of a sparse write.
+	// A sparse collection is one key per element plus a header; a reader assembles
+	// the collection by scanning every element key, so the scan must observe either
+	// the old or the new state, never a half-applied batch. Reads take RLock,
+	// writes (saveAgg / the point-write paths / deletion) take Lock.
+	aggMu sync.RWMutex
 	// clock is exported to subpackages via accessor; kept unexported to keep
 	// the API surface small.
 	clock *memory.Clock
@@ -65,10 +72,6 @@ type Store struct {
 
 	lastSave atomic.Int64
 
-	// cfgMu guards mutations of cfg made by CONFIG SET. Readers tolerate a
-	// slightly stale view: every knob it protects is a heuristic (eviction
-	// thresholds, sample counts), never a correctness constraint.
-	cfgMu   sync.RWMutex
 	slowLog *SlowLog
 
 	// shutdown is closed by SHUTDOWN; the embedding process decides what to do.
@@ -87,10 +90,9 @@ type Store struct {
 // usage has already reached the budget. Matches Redis' noeviction behaviour;
 // with an eviction policy the store evicts instead of refusing.
 func (s *Store) memoryFull() bool {
-	s.cfgMu.RLock()
-	defer s.cfgMu.RUnlock()
-	return s.cfg.MaxMemory > 0 && s.cfg.EvictionPolicy == config.NoEviction &&
-		uint64(s.dict.Used()) >= s.cfg.MaxMemory
+	c := s.cfg.Load()
+	return c.MaxMemory > 0 && c.EvictionPolicy == config.NoEviction &&
+		uint64(s.dict.Used()) >= c.MaxMemory
 }
 
 // Shutdown returns a channel that is closed when a client issues SHUTDOWN.
@@ -121,12 +123,8 @@ func Open(cfg *config.Config) (*Store, error) {
 	}
 
 	clock := memory.NewClock()
-	dict := memory.NewDict(cfg, clock)
-
 	s := &Store{
-		cfg:      cfg,
 		eng:      eng,
-		dict:     dict,
 		clock:    clock,
 		stop:        make(chan struct{}),
 		shutdown:    make(chan struct{}),
@@ -134,14 +132,18 @@ func Open(cfg *config.Config) (*Store, error) {
 		scanCursors: newScanCursorTable(),
 		stats:       Stats{startTime: time.Now()},
 	}
+	s.cfg.Store(cfg)
+
+	dict := memory.NewDict(&s.cfg, clock)
+	s.dict = dict
 
 	// Eviction in cache mode has to remove the persisted copy too.
 	var del func(db uint16, key string) error
 	if cfg.EvictionMode == config.EvictCache {
 		del = func(db uint16, key string) error { return s.deletePersisted(db, key) }
 	}
-	s.evictor = memory.NewEvictor(cfg, dict, del)
-	s.expirer = memory.NewExpirer(eng, dict, clock, cfg)
+	s.evictor = memory.NewEvictor(&s.cfg, dict, del)
+	s.expirer = memory.NewExpirer(eng, dict, clock, &s.cfg)
 	s.blocker = newBlocker()
 
 	if cfg.LoadMode == config.LoadAll {
@@ -167,7 +169,7 @@ func (s *Store) loadAll() error {
 	defer batch.Close()
 	pending := 0
 
-	for db := range s.cfg.Databases {
+	for db := range s.cfg.Load().Databases {
 		u16 := uint16(db)
 		err := s.eng.Scan(storage.DataPrefix(u16), func(k, v []byte) error {
 			typ, expireAt, payload, err := storage.DecodeValue(v)
@@ -212,7 +214,7 @@ func (s *Store) Close() error {
 }
 
 // Config returns the live configuration.
-func (s *Store) Config() *config.Config { return s.cfg }
+func (s *Store) Config() *config.Config { return s.cfg.Load() }
 
 // DBCount returns the number of addressable logical databases.
 func (s *Store) DBCount() int { return s.dict.Databases() }

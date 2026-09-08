@@ -1,6 +1,7 @@
 package redistore
 
 import (
+	"math"
 	"math/rand/v2"
 	"sort"
 	"strings"
@@ -33,20 +34,21 @@ func sortedByLex(m map[string]float64, desc bool) []storage.Member {
 }
 
 // lexBound is one endpoint of a lex range: [x inclusive, (x exclusive, or the
-// open-ended - / +.
+// open-ended - (lower than any member) / + (higher than any member).
 type lexBound struct {
-	value string
-	excl  bool
-	inf   bool
+	value  string
+	excl   bool
+	negInf bool // "-": no lower constraint
+	posInf bool // "+": higher than any member
 }
 
 func parseLexBound(b []byte) (lexBound, error) {
 	s := string(b)
 	switch s {
 	case "-":
-		return lexBound{inf: true}, nil
+		return lexBound{negInf: true}, nil
 	case "+":
-		return lexBound{inf: true}, nil
+		return lexBound{posInf: true}, nil
 	}
 	var lb lexBound
 	switch {
@@ -68,7 +70,11 @@ func parseLexBound(b []byte) (lexBound, error) {
 func lexInRange(items []storage.Member, min, max lexBound) []storage.Member {
 	out := items[:0:0]
 	for _, m := range items {
-		if !min.inf {
+		// min: "-" imposes no lower bound; "+" is above every member.
+		if !min.negInf {
+			if min.posInf {
+				continue
+			}
 			if min.excl {
 				if m.Member <= min.value {
 					continue
@@ -77,7 +83,11 @@ func lexInRange(items []storage.Member, min, max lexBound) []storage.Member {
 				continue
 			}
 		}
-		if !max.inf {
+		// max: "+" imposes no upper bound; "-" is below every member.
+		if !max.posInf {
+			if max.negInf {
+				continue
+			}
 			if max.excl {
 				if m.Member >= max.value {
 					continue
@@ -281,7 +291,13 @@ func zApplyAgg(a, b float64, agg zAggMode) float64 {
 		}
 		return a
 	}
-	return a + b
+	// SUM: Redis folds a non-finite result (+inf + -inf = NaN) to 0 rather
+	// than emitting NaN, which has no valid representation as a score.
+	s := a + b
+	if math.IsNaN(s) {
+		return 0
+	}
+	return s
 }
 
 // zParseOpArgs splits "numkeys key... [WEIGHTS w...] [AGGREGATE m] [WITHSCORES]"
@@ -513,6 +529,12 @@ func cmdZRandMember(c *Ctx, args [][]byte) error {
 	if count < 0 {
 		// Negative: repeats allowed.
 		count = -count
+		if count < 0 {
+			return &protoError{"ERR value is out of range"}
+		}
+		if count > 1<<30 {
+			return &protoError{"ERR value is out of range"}
+		}
 		out := make([]storage.Member, 0, count)
 		for range count {
 			out = append(out, all[rand.IntN(len(all))])
@@ -560,7 +582,13 @@ func writeZPopReply(c *Ctx, key string, items []storage.Member) {
 	}
 	c.w.WriteArray(2)
 	c.w.WriteBulkString(key)
-	writeMembers(c, items, true)
+	// ZMPOP/BZMPOP reply nested [member, score] pairs, matching Redis.
+	c.w.WriteArray(len(items))
+	for _, m := range items {
+		c.w.WriteArray(2)
+		c.w.WriteBulkString(m.Member)
+		c.w.WriteBulkString(formatFloat(m.Score))
+	}
 }
 
 func cmdZMPop(c *Ctx, args [][]byte) error {
@@ -642,7 +670,7 @@ func bzPopCmd(c *Ctx, args [][]byte, max bool) error {
 			}
 			timeout = remaining
 		}
-		if !c.Store.blockSleepSince(bvkeysVersion1, timeout) {
+		if !c.blockSleep(bvkeysVersion1, timeout) {
 			c.writeNull()
 			return nil
 		}
@@ -711,7 +739,7 @@ func cmdBZMPop(c *Ctx, args [][]byte) error {
 			}
 			timeout = remaining
 		}
-		if !c.Store.blockSleepSince(bvkeysVersion2, timeout) {
+		if !c.blockSleep(bvkeysVersion2, timeout) {
 			c.writeNull()
 			return nil
 		}

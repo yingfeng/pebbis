@@ -202,7 +202,7 @@ func decodeStreamFields(v []byte) ([]streamField, error) {
 
 // xAdd appends an entry. When id is the zero value the caller wants an
 // auto-generated ID. It returns the stored ID.
-func (s *Store) xAdd(db uint16, key string, id streamID, auto bool, fields []streamField, nomkstream bool) (streamID, error) {
+func (s *Store) xAdd(db uint16, key string, id streamID, auto, partialAuto bool, partialMS uint64, fields []streamField, nomkstream bool) (streamID, error) {
 
 	var last streamID
 	lastExists := false
@@ -214,21 +214,44 @@ func (s *Store) xAdd(db uint16, key string, id streamID, auto bool, fields []str
 		last, lastExists = lv, true
 	}
 
-	if auto {
-		now := uint64(s.clock.Now().UnixMilli())
-		id = streamID{ms: now}
-		if lastExists && last.ms == now {
-			id.seq = last.seq + 1
-		}
-		if lastExists && !last.less(id) && !last.equal(streamID{}) {
-			// Same or lower than the last entry: bump the sequence past it.
-			if last.ms >= id.ms {
-				id.ms, id.seq = last.ms, last.seq+1
+	if auto || partialAuto {
+		if partialAuto {
+			// "ms-*" partial auto-sequence: keep the supplied millisecond
+			// part, auto-generate the sequence. Redis bumps the sequence
+			// when ms matches the last entry, starts at 0 otherwise, and
+			// rejects a smaller ms or a sequence overflow.
+			if !lastExists {
+				if partialMS == 0 {
+					id = streamID{ms: 0, seq: 1} // 0-0 is the illegal minimum
+				} else {
+					id = streamID{ms: partialMS, seq: 0}
+				}
+			} else if partialMS < last.ms {
+				return streamID{}, &protoError{"ERR The ID specified in XADD is equal or smaller than the target stream top item"}
+			} else if partialMS == last.ms {
+				if last.seq == ^uint64(0) {
+					return streamID{}, &protoError{"ERR The stream has already the maximal ID possible"}
+				}
+				id = streamID{ms: last.ms, seq: last.seq + 1}
+			} else {
+				id = streamID{ms: partialMS, seq: 0}
+			}
+		} else {
+			now := uint64(s.clock.Now().UnixMilli())
+			if !lastExists {
+				id = streamID{ms: now}
+			} else if now > last.ms {
+				id = streamID{ms: now}
+			} else {
+				id = streamID{ms: last.ms, seq: last.seq + 1}
 			}
 		}
+		if lastExists && !last.less(id) {
+			return streamID{}, &protoError{"ERR The ID specified in XADD is equal or smaller than the target stream top item"}
+		}
 	} else {
-		if id.ms == 0 && id.seq == 0 {
-			return streamID{}, &protoError{"ERR The ID specified in XADD must be greater than 0-0"}
+		if id.ms == 0 && id.seq == 0 && lastExists {
+			return streamID{}, &protoError{"ERR The ID specified in XADD is equal or smaller than the target stream top item"}
 		}
 		if lastExists && !last.less(id) {
 			return streamID{}, &protoError{"ERR The ID specified in XADD is equal or smaller than the target stream top item"}
@@ -283,7 +306,17 @@ func (s *Store) xRange(db uint16, key string, start, end streamID, count int, re
 		start, end = end, start
 	}
 	lo := append(append([]byte(nil), prefix...), must16(start)...)
-	hi := append(append([]byte(nil), prefix...), must16(streamID{ms: end.ms, seq: end.seq + 1})...)
+	// Bump the upper bound to make the caller's inclusive `end` exclusive,
+	// carrying into the millisecond part when the sequence is already at
+	// its maximum (e.g. end "x-^max" must advance to "(x+1)-0", not wrap
+	// the sequence back to 0 while keeping x).
+	hiEnd := end
+	if hiEnd.seq == ^uint64(0) && hiEnd.ms != ^uint64(0) {
+		hiEnd = streamID{ms: hiEnd.ms + 1, seq: 0}
+	} else {
+		hiEnd.seq++
+	}
+	hi := append(append([]byte(nil), prefix...), must16(hiEnd)...)
 
 	var out []streamEntry
 	err := s.eng.ScanRange(lo, hi, func(k, v []byte) error {
@@ -337,7 +370,18 @@ func (s *Store) xDel(db uint16, key string, ids []streamID) (int64, error) {
 	defer batch.Close()
 	var n int64
 	for _, id := range ids {
-		if err := batch.Delete(appendStreamEntryKey(nil, db, key, id)); err != nil {
+		k := appendStreamEntryKey(nil, db, key, id)
+		// Redis only counts actually-removed entries, so skip ids that are
+		// not present rather than claiming a deletion.
+		if _, release, err := s.eng.Get(k); err != nil {
+			if err == storage.ErrNotFound {
+				continue
+			}
+			return 0, err
+		} else {
+			release()
+		}
+		if err := batch.Delete(k); err != nil {
 			return 0, err
 		}
 		n++
@@ -388,7 +432,9 @@ func (s *Store) xTrimMinID(db uint16, key string, id streamID) (int64, error) {
 
 func (s *Store) deleteRangeCount(lo, hi []byte) (int64, error) {
 	var n int64
-	err := s.eng.ScanKeys(lo, func(k []byte) error {
+	// Count entries in the range [lo, hi); ScanKeys is a prefix scan, so it
+	// must not be used here or the count would be wrong.
+	err := s.eng.ScanRange(lo, hi, func(k, v []byte) error {
 		n++
 		return nil
 	})
@@ -543,7 +589,10 @@ func (s *Store) pelOwned(db uint16, key, group, consumer string, count int) ([]s
 		}
 		v, release, err := s.eng.Get(appendStreamEntryKey(nil, db, key, p.id))
 		if err != nil {
-			continue // deleted meanwhile
+			// Deleted meanwhile (e.g. trimmed by MAXLEN): Redis still reports
+			// the PEL entry, with empty fields (bug 5570 behaviour).
+			out = append(out, streamEntry{id: p.id})
+			continue
 		}
 		fields, err := decodeStreamFields(v)
 		release()

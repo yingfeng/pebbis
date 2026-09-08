@@ -156,8 +156,8 @@ func TestExpireFlagsOnPlainKey(t *testing.T) {
 	t.Log("NX#2:", do(t, c, "EXPIRE", "k", "100", "NX").String())
 	preset(t, c, "k2", "v")
 	assertInt(t, do(t, c, "EXPIRE", "k2", "100", "XX"), 0) // no TTL yet
-	assertInt(t, do(t, c, "EXPIRE", "k2", "100", "GT"), 1) // GT applies without prior TTL
-	assertInt(t, do(t, c, "EXPIRE", "k3", "100", "LT"), 0) // LT fails without prior TTL
+	assertInt(t, do(t, c, "EXPIRE", "k2", "100", "GT"), 0) // GT needs an existing (smaller) TTL
+	assertInt(t, do(t, c, "EXPIRE", "k3", "100", "LT"), 0) // k3 does not exist
 	preset(t, c, "k4", "v")
 	assertInt(t, do(t, c, "EXPIRE", "k4", "100", "LT"), 1)
 	assertErr(t, do(t, c, "EXPIRE", "k4", "abc"), errNotInt)

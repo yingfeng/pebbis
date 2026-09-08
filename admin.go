@@ -243,6 +243,30 @@ func cmdObject(c *Ctx, args [][]byte) error {
 	}
 }
 
+// cmdDebug implements the DEBUG subcommands redistore supports. Only
+// SET-ACTIVE-EXPIRE exists: it toggles the background expiry cycle, mirroring
+// Redis' switch used by tests to create stale (logically expired) keys.
+func cmdDebug(c *Ctx, args [][]byte) error {
+	if len(args) < 1 {
+		return WrongArgs("debug")
+	}
+	switch strings.ToUpper(string(args[0])) {
+	case "SET-ACTIVE-EXPIRE":
+		if len(args) != 2 {
+			return WrongArgs("debug set-active-expire")
+		}
+		v, err := atoi(args[1])
+		if err != nil || (v != 0 && v != 1) {
+			return ErrSyntax
+		}
+		c.Store.expirer.SetEnabled(v == 1)
+		c.writeOK()
+		return nil
+	default:
+		return &protoError{"ERR DEBUG subcommand '" + strings.ToUpper(string(args[0])) + "' is not supported"}
+	}
+}
+
 // cmdConfigSet applies the runtime-tunable subset of CONFIG. Anything that
 // would change on-disk layout or the shard topology is rejected: it would need
 // a restart, and pretending otherwise would be worse than saying no.
@@ -289,6 +313,12 @@ func cmdConfigSet(c *Ctx, name string, value string) error {
 			return &protoError{"ERR Invalid slowlog-max-len value"}
 		}
 		s.slowLog.maxLen = v
+	case "lua-time-limit":
+		v, err := strconv.Atoi(value)
+		if err != nil || v < 0 {
+			return &protoError{"ERR Invalid lua-time-limit value"}
+		}
+		s.cfg.LuaTimeLimit = v
 	default:
 		return &protoError{"ERR CONFIG SET is not supported for this parameter"}
 	}

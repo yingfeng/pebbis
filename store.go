@@ -74,7 +74,23 @@ type Store struct {
 	// shutdown is closed by SHUTDOWN; the embedding process decides what to do.
 	shutdown chan struct{}
 
+	// scanCursors backs SCAN: the wire cursor must be a number (every client
+	// parses it as uint64) while the server needs the last key handed out to
+	// resume in O(1), so the mapping is kept here.
+	scanCursors *scanCursorTable
+
 	stats Stats
+}
+
+// memoryFull reports whether write commands must be rejected with an OOM
+// error: a maxmemory budget is configured, the policy is noeviction, and
+// usage has already reached the budget. Matches Redis' noeviction behaviour;
+// with an eviction policy the store evicts instead of refusing.
+func (s *Store) memoryFull() bool {
+	s.cfgMu.RLock()
+	defer s.cfgMu.RUnlock()
+	return s.cfg.MaxMemory > 0 && s.cfg.EvictionPolicy == config.NoEviction &&
+		uint64(s.dict.Used()) >= s.cfg.MaxMemory
 }
 
 // Shutdown returns a channel that is closed when a client issues SHUTDOWN.
@@ -112,10 +128,11 @@ func Open(cfg *config.Config) (*Store, error) {
 		eng:      eng,
 		dict:     dict,
 		clock:    clock,
-		stop:     make(chan struct{}),
-		shutdown: make(chan struct{}),
-		slowLog:  newSlowLog(),
-		stats:    Stats{startTime: time.Now()},
+		stop:        make(chan struct{}),
+		shutdown:    make(chan struct{}),
+		slowLog:     newSlowLog(),
+		scanCursors: newScanCursorTable(),
+		stats:       Stats{startTime: time.Now()},
 	}
 
 	// Eviction in cache mode has to remove the persisted copy too.

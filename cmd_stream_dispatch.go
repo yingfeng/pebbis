@@ -19,9 +19,42 @@ func cmdXGroup(c *Ctx, args [][]byte) error {
 		return cmdXGroupCreateConsumer(c, rest)
 	case "DELCONSUMER":
 		return cmdXGroupDelConsumer(c, rest)
+	case "SETID":
+		return cmdXGroupSetID(c, rest)
 	default:
 		return ErrSyntax
 	}
+}
+
+// cmdXGroupSetID implements `XGROUP SETID key group id [ENTRIESREAD n]`. It
+// moves the group's last-delivered ID (and optionally the entries-read
+// counter); "-" resets to the stream's beginning, matching Redis.
+func cmdXGroupSetID(c *Ctx, args [][]byte) error {
+	if len(args) < 3 {
+		return WrongArgs("xgroup setid")
+	}
+	key, group := string(args[0]), string(args[1])
+	idStr := string(args[2])
+	var id streamID
+	if idStr == "-" {
+		id = streamID{}
+	} else {
+		parsed, err := parseStreamID(idStr)
+		if err != nil {
+			return err
+		}
+		id = parsed
+	}
+	if _, exists, err := c.Store.groupGet(c.DB, key, group); err != nil {
+		return err
+	} else if !exists {
+		return &protoError{"NOGROUP No such key '" + key + "' or consumer group '" + group + "'"}
+	}
+	if err := c.Store.groupSet(c.DB, key, group, id); err != nil {
+		return err
+	}
+	c.writeOK()
+	return nil
 }
 
 func cmdXInfo(c *Ctx, args [][]byte) error {

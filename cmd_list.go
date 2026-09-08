@@ -349,6 +349,7 @@ func popCmd(c *Ctx, args [][]byte, left bool) error {
 		return WrongArgs("lpop")
 	}
 	n := 1
+	hasCount := false
 	if len(args) == 2 {
 		v, err := toInt64(args[1])
 		if err != nil {
@@ -358,18 +359,28 @@ func popCmd(c *Ctx, args [][]byte, left bool) error {
 			return &protoError{"ERR value is out of range, must be positive"}
 		}
 		n = int(v)
+		hasCount = true
 	}
 	out, err := c.Store.listPop(c.DB, string(args[0]), n, left)
 	if err != nil {
 		return err
 	}
-	if n == 1 {
+	if !hasCount {
+		// No COUNT argument: single-element semantics.
 		if len(out) == 0 {
 			c.writeNull()
 		} else {
 			c.w.WriteBulkString(out[0])
 		}
 		return nil
+	}
+	// With COUNT, Redis always returns an array (even for count 1).
+	if !left {
+		// RPOP returns the popped elements in the order they were removed,
+		// i.e. tail-most first, which is the reverse of list order.
+		for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+			out[i], out[j] = out[j], out[i]
+		}
 	}
 	c.w.WriteArray(len(out))
 	for _, e := range out {

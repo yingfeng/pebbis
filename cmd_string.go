@@ -381,6 +381,12 @@ func cmdGetRange(c *Ctx, args [][]byte) error {
 	if err != nil {
 		return err
 	}
+	// Redis special case: both indices negative and start after end describe
+	// an empty range and must return "" (e.g. GETRANGE k -100 -101).
+	if start < 0 && end < 0 && start > end {
+		c.w.WriteBulkString("")
+		return nil
+	}
 	val, ok, err := c.Store.getString(c.DB, string(args[0]))
 	if err != nil {
 		return err
@@ -412,9 +418,7 @@ func cmdSetRange(c *Ctx, args [][]byte) error {
 	if offset < 0 {
 		return &protoError{"ERR offset is out of range"}
 	}
-	if offset > maxValueSize {
-		return &protoError{"ERR string exceeds maximum allowed size"}
-	}
+	value := args[2]
 	cur, typ, expireAt, ok, err := c.Store.getTyped(c.DB, key)
 	if err != nil {
 		return err
@@ -422,20 +426,29 @@ func cmdSetRange(c *Ctx, args [][]byte) error {
 	if ok && typ != config.TypeString {
 		return ErrWrongType
 	}
+	// Redis: SETRANGE on a missing key with an empty value is a no-op that
+	// must not create the key and returns 0.
+	if !ok && len(value) == 0 {
+		c.writeInt(0)
+		return nil
+	}
 	// The result is at least as long as the offset plus the new bytes, but
 	// never shorter than the existing value: SETRANGE overwrites in place and
 	// keeps whatever tail it did not touch.
-	need := int(offset) + len(args[2])
-	if need < len(cur) {
-		need = len(cur)
+	need := offset + int64(len(value))
+	if need < int64(len(cur)) {
+		need = int64(len(cur))
+	}
+	if need > maxValueSize {
+		return &protoError{"ERR string exceeds maximum allowed size"}
 	}
 	next := make([]byte, need)
 	copy(next, cur)
-	copy(next[offset:], args[2])
+	copy(next[offset:], value)
 	if err := c.Store.setStringSimple(c.DB, key, next, expireAt); err != nil {
 		return err
 	}
-	c.writeInt(int64(len(next)))
+	c.writeInt(need)
 	return nil
 }
 
@@ -454,7 +467,7 @@ func resolveRange(start, end, n int64) (int64, int64) {
 		start = 0
 	}
 	if end < 0 {
-		end = -1
+		end = 0
 	}
 	if end >= n {
 		end = n - 1

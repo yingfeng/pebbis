@@ -94,16 +94,30 @@ func cmdWatch(c *Ctx, args [][]byte) error {
 	if cs.watched == nil {
 		cs.watched = map[string]uint64{}
 	}
+	if cs.watchedExpiry == nil {
+		cs.watchedExpiry = map[string]int64{}
+	}
+	if cs.watchedStale == nil {
+		cs.watchedStale = map[string]bool{}
+	}
+	now := c.Store.clock.NowMilli()
 	for _, a := range args {
 		key := string(a)
 		if _, seen := cs.watched[key]; seen {
 			continue
 		}
 		ver := uint64(0)
+		exp := int64(-1) // -1: the key did not exist at WATCH time
+		stale := false
 		if e, ok := c.Store.dict.Lookup(c.DB, key); ok {
 			ver = e.Version()
+			exp = e.Expiry()
+			// Already logically expired when WATCHed?
+			stale = exp > 0 && exp <= now
 		}
 		cs.watched[key] = ver
+		cs.watchedExpiry[key] = exp
+		cs.watchedStale[key] = stale
 	}
 	c.writeOK()
 	return nil
@@ -116,6 +130,8 @@ func cmdUnwatch(c *Ctx, args [][]byte) error {
 	cs := c.Client()
 	if cs != nil {
 		cs.watched = nil
+		cs.watchedExpiry = nil
+		cs.watchedStale = nil
 	}
 	c.writeOK()
 	return nil
@@ -126,6 +142,8 @@ func abortTxn(cs *connState) {
 	cs.queue = nil
 	cs.dirtyTxn = false
 	cs.watched = nil
+	cs.watchedExpiry = nil
+	cs.watchedStale = nil
 }
 
 // cmdExec runs the queued commands.
@@ -141,18 +159,41 @@ func cmdExec(c *Ctx, args [][]byte) error {
 		return &protoError{"ERR EXEC without MULTI"}
 	}
 
-	// Optimistic concurrency check.
+	// Optimistic concurrency check, expiry-aware: a watched key that expired
+	// after WATCH counts as modified, while a key that was already stale
+	// (logically expired) at WATCH time is treated as non-existent, so its
+	// removal does not abort the transaction.
 	if len(cs.watched) > 0 {
+		now := c.Store.clock.NowMilli()
+		abort := false
 		for key, ver := range cs.watched {
-			cur := uint64(0)
+			we := int64(-1)
+			if cs.watchedExpiry != nil {
+				we = cs.watchedExpiry[key]
+			}
+			staleAtWatch := cs.watchedStale != nil && cs.watchedStale[key]
 			if e, ok := c.Store.dict.Lookup(c.DB, key); ok {
-				cur = e.Version()
+				if we < 0 || e.Version() != ver {
+					// Created after WATCH, or written to.
+					abort = true
+					break
+				}
+				if !staleAtWatch && e.Expiry() > 0 && e.Expiry() <= now {
+					// Live when watched, expired since the WATCH without any
+					// user write: expiry counts as a modification.
+					abort = true
+					break
+				}
+			} else if we >= 0 && !staleAtWatch {
+				// A live key was deleted (or expired) after WATCH.
+				abort = true
+				break
 			}
-			if cur != ver {
-				abortTxn(cs)
-				c.writeNull()
-				return nil
-			}
+		}
+		if abort {
+			abortTxn(cs)
+			c.writeNull()
+			return nil
 		}
 	}
 	if cs.dirtyTxn {
@@ -178,6 +219,10 @@ func cmdExec(c *Ctx, args [][]byte) error {
 			c.w.WriteError(UnknownCommand(strings.ToLower(line[0])).Error())
 			continue
 		}
+		if cm.write && c.Store.memoryFull() {
+			c.w.WriteError(OOM(upper).Error())
+			continue
+		}
 		byteArgs := make([][]byte, 0, len(line)-1)
 		for _, a := range line[1:] {
 			byteArgs = append(byteArgs, []byte(a))
@@ -190,6 +235,7 @@ func cmdExec(c *Ctx, args [][]byte) error {
 			Args:       line,
 			state:      cs,
 			srv:        c.srv,
+			noBlock:    true, // blocking commands run non-blocking inside MULTI
 			w:          c.w,
 		}
 		if err := cm.fn(sub, byteArgs); err != nil {

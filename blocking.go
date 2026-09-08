@@ -150,7 +150,7 @@ func blockedPop(c *Ctx, args [][]byte, left bool) error {
 			}
 			timeout = remaining
 		}
-		if !c.Store.blockSleepSince(v, timeout) {
+		if !c.blockSleep(v, timeout) {
 			c.writeNull()
 			return nil
 		}
@@ -218,7 +218,7 @@ func cmdBRPopLPush(c *Ctx, args [][]byte) error {
 			}
 			timeout = remaining
 		}
-		if !c.Store.blockSleepSince(v, timeout) {
+		if !c.blockSleep(v, timeout) {
 			c.writeNull()
 			return nil
 		}

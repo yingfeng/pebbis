@@ -40,7 +40,9 @@ func lmoveCmd(c *Ctx, args [][]byte, blocking bool) error {
 	var secs int64
 	if blocking {
 		var err error
-		if secs, err = toInt64(args[3]); err != nil {
+		// BLMOVE layout is (src, dst, from, to, timeout); the timeout is the
+		// final argument, after the destination side.
+		if secs, err = toInt64(args[len(args)-1]); err != nil {
 			return err
 		}
 		if secs < 0 {
@@ -87,7 +89,7 @@ func lmoveCmd(c *Ctx, args [][]byte, blocking bool) error {
 			}
 			timeout = remaining
 		}
-		if !c.Store.blockSleepSince(bvsrcVersion, timeout) {
+		if !c.blockSleep(bvsrcVersion, timeout) {
 			c.writeNull()
 			return nil
 		}
@@ -238,13 +240,16 @@ func lmpopCmd(c *Ctx, args [][]byte, blocking bool) error {
 	keys := byteSliceToStrings(args[nkPos+1 : nkPos+1+int(nk)])
 	rest := args[nkPos+1+int(nk):]
 	left := true
+	foundWhere := false
 	count := 1
 	for i := 0; i < len(rest); i++ {
 		switch strings.ToUpper(string(rest[i])) {
 		case "LEFT":
 			left = true
+			foundWhere = true
 		case "RIGHT":
 			left = false
+			foundWhere = true
 		case "COUNT":
 			if i+1 >= len(rest) {
 				return ErrSyntax
@@ -253,9 +258,19 @@ func lmpopCmd(c *Ctx, args [][]byte, blocking bool) error {
 			if perr != nil {
 				return perr
 			}
+			if v <= 0 {
+				return &protoError{"ERR COUNT must be > 0"}
+			}
 			count = int(v)
 			i++
+		default:
+			return ErrSyntax
 		}
+	}
+	// Redis requires an explicit LEFT/RIGHT; ommitting it is a syntax error
+	// (it is not optional, unlike the implicit direction in some other cmds).
+	if !foundWhere {
+		return ErrSyntax
 	}
 
 	timeout := time.Duration(secs) * time.Second
@@ -297,7 +312,7 @@ func lmpopCmd(c *Ctx, args [][]byte, blocking bool) error {
 			}
 			timeout = remaining
 		}
-		if !c.Store.blockSleepSince(bvkeysVersion, timeout) {
+		if !c.blockSleep(bvkeysVersion, timeout) {
 			c.writeNull()
 			return nil
 		}

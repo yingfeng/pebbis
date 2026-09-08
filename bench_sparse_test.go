@@ -92,7 +92,7 @@ func BenchmarkInlineHSet(b *testing.B) {
 func BenchmarkStreamXAdd(b *testing.B) {
 	s := openGroupStore(b)
 	for i := 0; i < 10000; i++ {
-		if _, err := s.xAdd(0, "q", streamID{}, true, []streamField{
+		if _, err := s.xAdd(0, "q", streamID{}, true, false, 0, []streamField{
 			{Field: "job", Value: strconv.Itoa(i)},
 		}, false); err != nil {
 			b.Fatalf("xadd: %v", err)
@@ -100,7 +100,7 @@ func BenchmarkStreamXAdd(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		if _, err := s.xAdd(0, "q", streamID{}, true, []streamField{
+		if _, err := s.xAdd(0, "q", streamID{}, true, false, 0, []streamField{
 			{Field: "job", Value: strconv.Itoa(i)},
 		}, false); err != nil {
 			b.Fatalf("xadd: %v", err)

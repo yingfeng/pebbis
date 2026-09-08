@@ -91,14 +91,16 @@ func TestStreamGroupErrors(t *testing.T) {
 // TestStreamEntryIDValidation: explicit IDs must be strictly monotonic.
 func TestStreamEntryIDValidation(t *testing.T) {
 	c := setup(t)
-	assertErr(t, do(t, c, "XADD", "s", "0-0", "f", "v"), "ERR")
+	assertErr(t, do(t, c, "XADD", "s", "0-0", "f", "v"), "ERR") // 0-0 is never a valid ID
 	assertStr(t, do(t, c, "XADD", "s", "1-1", "f", "v"), "1-1")
-	assertErr(t, do(t, c, "XADD", "s", "42-*", "f", "v"), "ERR") // 42 < last
+	assertErr(t, do(t, c, "XADD", "s", "1-0", "f", "v"), "ERR") // smaller than top
+	assertErr(t, do(t, c, "XADD", "s", "1-1", "f", "v"), "ERR") // equal to top
 	assertStr(t, do(t, c, "XADD", "s", "1-18446744073709551615", "f", "v"), "1-18446744073709551615")
 	assertErr(t, do(t, c, "XADD", "s", "1-*", "f", "v"), "ERR") // seq overflow
 	// Malformed IDs.
 	assertErr(t, do(t, c, "XADD", "s", "abc", "f", "v"), "ERR")
-	assertErr(t, do(t, c, "XADD", "s", "1", "f", "v"), "ERR")
+	// A bare millisecond part is valid and defaults the sequence to 0.
+	assertStr(t, do(t, c, "XADD", "s2", "1", "f", "v"), "1-0")
 }
 
 // TestStreamArityAndExclusiveRange: XADD arity, NOMKSTREAM, exclusive bounds.

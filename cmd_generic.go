@@ -1,16 +1,308 @@
 package redistore
 
 import (
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
-	"github.com/gobwas/glob"
 	"github.com/redistore/redistore/config"
+	"github.com/redistore/redistore/glob"
 	"github.com/redistore/redistore/storage"
 )
 
 // Generic (key-space) commands.
+
+// cmdSort implements the core of SORT: ordering the members of a list, set or
+// zset numerically (lexicographically with ALPHA), with LIMIT and ASC/DESC,
+// plus the STORE variant. BY/GET patterns are not supported.
+func cmdSort(c *Ctx, args [][]byte) error {
+	if len(args) < 1 {
+		return WrongArgs("sort")
+	}
+	key := string(args[0])
+	limitOff, limitCount := 0, -1
+	alpha, desc := false, false
+	storeDst := ""
+	byPattern := ""
+	hasBy := false
+	var getPatterns []string
+	for i := 1; i < len(args); i++ {
+		switch strings.ToUpper(string(args[i])) {
+		case "ASC":
+			desc = false
+		case "DESC":
+			desc = true
+		case "ALPHA":
+			alpha = true
+		case "LIMIT":
+			if i+2 >= len(args) {
+				return ErrSyntax
+			}
+			off, err1 := atoi(args[i+1])
+			cnt, err2 := atoi(args[i+2])
+			if err1 != nil || err2 != nil || off < 0 {
+				return ErrSyntax
+			}
+			limitOff, limitCount = off, cnt
+			i += 2
+		case "BY":
+			if i+1 >= len(args) {
+				return ErrSyntax
+			}
+			byPattern = string(args[i+1])
+			hasBy = true
+			i++
+		case "GET":
+			if i+1 >= len(args) {
+				return ErrSyntax
+			}
+			getPatterns = append(getPatterns, string(args[i+1]))
+			i++
+		case "STORE":
+			if i+1 >= len(args) {
+				return ErrSyntax
+			}
+			storeDst = string(args[i+1])
+			i++
+		default:
+			return ErrSyntax
+		}
+	}
+
+	// Collect the source members. A missing key sorts the empty list.
+	_, typ, _, ok, err := c.Store.getTyped(c.DB, key)
+	if err != nil {
+		return err
+	}
+	var items []string
+	if ok {
+		switch typ {
+		case config.TypeList:
+			a, err := c.Store.loadAgg(c.DB, key, config.TypeList)
+			if err != nil {
+				return err
+			}
+			items = a.list
+		case config.TypeSet:
+			a, err := c.Store.loadAgg(c.DB, key, config.TypeSet)
+			if err != nil {
+				return err
+			}
+			for m := range a.set {
+				items = append(items, m)
+			}
+		case config.TypeZSet:
+			a, err := c.Store.loadAgg(c.DB, key, config.TypeZSet)
+			if err != nil {
+				return err
+			}
+			for m := range a.zset {
+				items = append(items, m)
+			}
+			// A zset's members are ordered by score (then lexicographically);
+			// that is the order SORT starts from, and what "BY nosort" keeps.
+			sort.Slice(items, func(i, j int) bool {
+				if a.zset[items[i]] != a.zset[items[j]] {
+					return a.zset[items[i]] < a.zset[items[j]]
+				}
+				return items[i] < items[j]
+			})
+		default:
+			return ErrWrongType
+		}
+	}
+
+	// Resolve the sort weights. "BY nosort" (or a pattern with no *) keeps the
+	// source order; otherwise each element is looked up through the pattern.
+	// Only an explicit "BY nosort" skips sorting; a constant pattern (no "*")
+	// simply gives every element the same weight, which the tie-break then
+	// orders by element.
+	nosort := hasBy && strings.EqualFold(byPattern, "nosort")
+
+	type sortRow struct {
+		val string
+		num float64
+		str string
+	}
+	rows := make([]sortRow, 0, len(items))
+	if hasBy && !nosort {
+		for _, it := range items {
+			w, err := c.sortLookup(it, byPattern)
+			if err != nil {
+				return err
+			}
+			rows = append(rows, sortRow{val: it, str: w})
+		}
+	} else {
+		for _, it := range items {
+			rows = append(rows, sortRow{val: it, str: it})
+		}
+	}
+
+	if !nosort {
+		if !alpha {
+			// Without ALPHA every weight must be a double, as in Redis. A
+			// missing weight key yields an empty string, which counts as 0.
+			for i := range rows {
+				s := strings.TrimSpace(rows[i].str)
+				if s == "" {
+					rows[i].num = 0
+					continue
+				}
+				v, err := strconv.ParseFloat(s, 64)
+				if err != nil {
+					return &protoError{"ERR One or more scores can't be converted into double"}
+				}
+				rows[i].num = v
+			}
+		}
+		sort.SliceStable(rows, func(i, j int) bool {
+			var cmp int
+			if alpha {
+				cmp = strings.Compare(rows[i].str, rows[j].str)
+			} else if rows[i].num < rows[j].num {
+				cmp = -1
+			} else if rows[i].num > rows[j].num {
+				cmp = 1
+			}
+			// Equal weights fall back to the element itself, so ties are
+			// deterministic (and lexicographic, as Redis does).
+			if cmp == 0 {
+				cmp = strings.Compare(rows[i].val, rows[j].val)
+			}
+			if desc {
+				return cmp > 0
+			}
+			return cmp < 0
+		})
+	}
+
+	// "BY nosort" keeps the source order, but DESC still reverses it.
+	if nosort && desc {
+		for i, j := 0, len(rows)-1; i < j; i, j = i+1, j-1 {
+			rows[i], rows[j] = rows[j], rows[i]
+		}
+	}
+
+	// Apply LIMIT to the ordered result. COUNT may be huge (clients pass
+	// i64::MAX for "the rest"), so compute against the remaining length
+	// instead of the raw sum, which would overflow.
+	if limitOff < 0 || limitOff > len(rows) {
+		limitOff = len(rows)
+	}
+	end := len(rows)
+	if limitCount >= 0 && limitCount < len(rows)-limitOff {
+		end = limitOff + limitCount
+	}
+	rows = rows[limitOff:end]
+	result := make([]string, 0, len(rows))
+	for _, r := range rows {
+		result = append(result, r.val)
+	}
+
+	if storeDst != "" {
+		if len(result) == 0 {
+			// Storing nothing removes the destination; the removal is still a
+			// modification for WATCH purposes.
+			if _, err := c.Store.deleteKey(c.DB, storeDst); err != nil {
+				return err
+			}
+			c.writeInt(0)
+			return nil
+		}
+		if _, err := c.Store.deleteKey(c.DB, storeDst); err != nil {
+			return err
+		}
+		if _, err := c.Store.listPush(c.DB, storeDst, result, false, false); err != nil {
+			return err
+		}
+		c.writeInt(int64(len(result)))
+		return nil
+	}
+
+	// With GET the reply is one value per (element, pattern) pair, in pattern
+	// order; a missing key replies nil.
+	if len(getPatterns) > 0 {
+		c.w.WriteArray(len(result) * len(getPatterns))
+		for _, v := range result {
+			for _, p := range getPatterns {
+				s, found, err := c.sortLookupValue(v, p)
+				if err != nil {
+					return err
+				}
+				if !found {
+					c.writeNull()
+					continue
+				}
+				c.w.WriteBulkString(s)
+			}
+		}
+		return nil
+	}
+
+	c.w.WriteArray(len(result))
+	for _, s := range result {
+		c.w.WriteBulkString(s)
+	}
+	return nil
+}
+
+// cmdSortRO is SORT_RO: the read-only SORT variant, which rejects STORE.
+func cmdSortRO(c *Ctx, args [][]byte) error {
+	for _, a := range args {
+		if strings.EqualFold(string(a), "STORE") {
+			return &protoError{"ERR SORT_RO is read-only and does not support the STORE option"}
+		}
+	}
+	return cmdSort(c, args)
+}
+
+// sortLookup resolves a BY pattern for elem, returning "" when the weight key
+// is missing (Redis treats a missing weight as 0).
+func (c *Ctx) sortLookup(elem, pattern string) (string, error) {
+	s, _, err := c.sortLookupValue(elem, pattern)
+	return s, err
+}
+
+// sortLookupValue resolves a BY/GET pattern for elem: the pattern's "*" is
+// replaced by the element, "key->field" reads a hash field, and "#" is the
+// element itself. found reports whether the value exists.
+func (c *Ctx) sortLookupValue(elem, pattern string) (string, bool, error) {
+	if pattern == "#" {
+		return elem, true, nil
+	}
+	key, field := pattern, ""
+	fromHash := false
+	// "->" only means a hash field when a field name follows it; a pattern
+	// ending in "->" is a plain key that happens to contain the arrow.
+	if i := strings.Index(pattern, "->"); i >= 0 && i+2 < len(pattern) {
+		key, field, fromHash = pattern[:i], pattern[i+2:], true
+	}
+	key = strings.Replace(key, "*", elem, 1)
+
+	if fromHash {
+		a, err := c.Store.loadAgg(c.DB, key, config.TypeHash)
+		if err != nil || !a.exists {
+			// A missing (or wrong-typed) weight key is simply absent.
+			return "", false, nil
+		}
+		v, ok := a.hash[field]
+		if !ok {
+			return "", false, nil
+		}
+		return string(v), true, nil
+	}
+	v, ok, err := c.Store.getString(c.DB, key)
+	if err != nil {
+		return "", false, err
+	}
+	if !ok {
+		return "", false, nil
+	}
+	return string(v), true, nil
+}
 
 func cmdDel(c *Ctx, args [][]byte) error {
 	if err := c.checkArgLen(len(args), -1); err != nil {
@@ -102,6 +394,24 @@ func expireAtCmd(c *Ctx, key string, at time.Time, opt ExpireOption) error {
 	return nil
 }
 
+// expireAbsTime computes the absolute expiry time for a relative TTL in the
+// given unit (mult=1000 for seconds, mult=1 for milliseconds), mirroring
+// Redis' overflow checks: both the unit-scaled value and its sum with "now"
+// must fit in a signed 64-bit millisecond timestamp, otherwise the TTL is out
+// of range (e.g. EXPIRE key 9223370399119966).
+func expireAbsTime(now time.Time, value, mult int64) (time.Time, error) {
+	ms := value * mult
+	if mult != 0 && value != 0 && ms/mult != value {
+		return time.Time{}, ErrInvalidExpire
+	}
+	nowMs := now.UnixMilli()
+	abs := nowMs + ms
+	if (ms > 0 && abs < nowMs) || (ms < 0 && abs > nowMs) {
+		return time.Time{}, ErrInvalidExpire
+	}
+	return time.UnixMilli(abs), nil
+}
+
 func cmdExpire(c *Ctx, args [][]byte) error {
 	if err := c.checkArgLen(len(args), -2); err != nil {
 		return err
@@ -110,11 +420,15 @@ func cmdExpire(c *Ctx, args [][]byte) error {
 	if err != nil {
 		return err
 	}
+	at, err := expireAbsTime(c.Store.clock.Now(), secs, 1000)
+	if err != nil {
+		return err
+	}
 	opt, err := parseExpireOption(args, 2)
 	if err != nil {
 		return err
 	}
-	return expireAtCmd(c, string(args[0]), c.Store.clock.Now().Add(time.Duration(secs)*time.Second), opt)
+	return expireAtCmd(c, string(args[0]), at, opt)
 }
 
 func cmdPExpire(c *Ctx, args [][]byte) error {
@@ -125,11 +439,15 @@ func cmdPExpire(c *Ctx, args [][]byte) error {
 	if err != nil {
 		return err
 	}
+	at, err := expireAbsTime(c.Store.clock.Now(), ms, 1)
+	if err != nil {
+		return err
+	}
 	opt, err := parseExpireOption(args, 2)
 	if err != nil {
 		return err
 	}
-	return expireAtCmd(c, string(args[0]), c.Store.clock.Now().Add(time.Duration(ms)*time.Millisecond), opt)
+	return expireAtCmd(c, string(args[0]), at, opt)
 }
 
 func cmdExpireAt(c *Ctx, args [][]byte) error {
@@ -286,13 +604,95 @@ func cmdRenameNX(c *Ctx, args [][]byte) error {
 	return nil
 }
 
-// cmdScan iterates the keyspace.
+// scanCursorTTL is how long a SCAN cursor stays valid. A full iteration takes a
+// fraction of this, but an abandoned iteration must not leak the cursor.
+const scanCursorTTL = 5 * time.Minute
+
+// maxScanCursors caps the table. It is generous: one entry per in-flight scan,
+// and an entry is a handful of bytes.
+const maxScanCursors = 4096
+
+type scanCursorEntry struct {
+	key    []byte
+	db     uint16
+	expiry time.Time
+}
+
+// scanCursorTable maps an opaque numeric SCAN cursor back to the last key
+// handed out.
 //
-// The cursor counts how many keys to skip, and iteration follows Pebble's
-// stable key order, so a full iteration neither duplicates nor misses keys that
-// were present throughout. Stepping is O(cursor) rather than O(1): acceptable
-// for an administrative command, and a bucket-ordered O(1) cursor is a
-// follow-up.
+// Redis clients parse the cursor as an unsigned integer, so the wire value
+// cannot be the key itself. Keeping the mapping server-side keeps a resumed
+// scan at O(1) seek cost; the alternative — a cursor that counts how many keys
+// to skip — would make a full iteration quadratic over the keyspace.
+//
+// A cursor that is unknown or expired is not an error: the scan simply restarts
+// from the beginning, which SCAN already permits (it may return keys twice).
+type scanCursorTable struct {
+	mu   sync.Mutex
+	next uint64
+	byID map[uint64]scanCursorEntry
+}
+
+func newScanCursorTable() *scanCursorTable {
+	return &scanCursorTable{byID: make(map[uint64]scanCursorEntry)}
+}
+
+// alloc stores key (already a copy owned by the caller) and returns its cursor.
+func (t *scanCursorTable) alloc(key []byte, db uint16) uint64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	now := time.Now()
+	if len(t.byID) >= maxScanCursors {
+		// Drop expired entries first, then the oldest ids (ids increase
+		// monotonically, so a small id means an old cursor).
+		for id, e := range t.byID {
+			if now.After(e.expiry) || id < t.next-maxScanCursors/2 {
+				delete(t.byID, id)
+			}
+		}
+	}
+
+	t.next++
+	if t.next == 0 {
+		t.next = 1 // 0 is reserved for "start over" / "done"
+	}
+	id := t.next
+	t.byID[id] = scanCursorEntry{key: key, db: db, expiry: now.Add(scanCursorTTL)}
+	return id
+}
+
+// lookup returns the resume key for id, or nil when the cursor is unknown,
+// expired or belongs to another database.
+func (t *scanCursorTable) lookup(id uint64, db uint16) []byte {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	e, ok := t.byID[id]
+	if !ok || e.db != db || time.Now().After(e.expiry) {
+		return nil
+	}
+	return e.key
+}
+
+// cmdScan implements SCAN. It returns up to COUNT keys per call and resumes
+// from a cursor that encodes the last key returned.
+//
+// Redis' SCAN cursor is a position in the key space, not a skip count. We use
+// the same model: each call seeks to the first key strictly greater than the
+// last one it handed back, so iteration always advances toward the
+// lexicographic end. A SCAN under concurrent writes still terminates — every
+// key present for the whole scan is returned, and the cursor reaches 0 once the
+// tail is exhausted. A "0" cursor (the only value a client may invent) means
+// start from the beginning.
+//
+// The wire format is a plain decimal number: Redis hands the cursor back as a
+// bulk string, but every client library (go-redis, redis-cli, jedis, …) parses
+// it as an unsigned 64-bit integer, so a base64 or otherwise opaque cursor
+// breaks every client. The numeric cursor is an id into a server-side table
+// that remembers the last key, which keeps a resumed scan at O(1) seek cost —
+// a skip-count cursor would make a full iteration quadratic over the keyspace.
 func cmdScan(c *Ctx, args [][]byte) error {
 	if err := c.checkArgLen(len(args), -1); err != nil {
 		return err
@@ -302,9 +702,16 @@ func cmdScan(c *Ctx, args [][]byte) error {
 	if (len(args)-1)%2 != 0 {
 		return ErrSyntax
 	}
-	cursor, err := strconv.ParseUint(string(args[0]), 10, 64)
-	if err != nil {
-		return ErrNotInteger
+	var startKey []byte
+	if string(args[0]) != "0" {
+		id, perr := strconv.ParseUint(string(args[0]), 10, 64)
+		if perr != nil {
+			return &protoError{"ERR invalid cursor"}
+		}
+		// A cursor we produced resolves back to the previous call's last key.
+		// One we did not produce (garbage, or an entry since expired) restarts
+		// from the beginning, which is the tolerant behaviour Redis shows.
+		startKey = c.Store.scanCursors.lookup(id, c.DB)
 	}
 	var matchFn func(string) bool
 	count := 10
@@ -334,10 +741,9 @@ func cmdScan(c *Ctx, args [][]byte) error {
 
 	batch := make([]string, 0, count)
 	now := c.Store.clock.NowMilli()
-	var seen uint64
-	next := cursor
-
-	err = c.Store.eng.ScanKeys(storage.DataPrefix(c.DB), func(k []byte) error {
+	var lastKey []byte // last data key examined, used to build the next cursor
+	stopped := false
+	err := c.Store.eng.ScanKeysFrom(storage.DataPrefix(c.DB), startKey, func(k []byte) error {
 		if len(batch) >= count {
 			return storage.ErrStop
 		}
@@ -345,12 +751,7 @@ func cmdScan(c *Ctx, args [][]byte) error {
 		if key == "" {
 			return nil
 		}
-		seen++
-		// Skip everything already returned on previous calls.
-		if seen <= cursor {
-			return nil
-		}
-		next = seen
+		lastKey = append([]byte(nil), k...)
 		if !c.Store.keyAlive(c.DB, key, now) {
 			return nil
 		}
@@ -359,16 +760,23 @@ func cmdScan(c *Ctx, args [][]byte) error {
 		}
 		return nil
 	})
-	if err != nil && !storage.IsStop(err) {
-		return err
+	if err != nil {
+		if storage.IsStop(err) {
+			stopped = true
+		} else {
+			return err
+		}
 	}
-	// A batch smaller than COUNT means the iteration ran off the end.
-	if len(batch) < count {
-		next = 0
+
+	// cursor 0 iff the iteration ran off the end; otherwise hand out an id for
+	// the last key so the next call resumes just past it.
+	nextCursor := "0"
+	if stopped && len(lastKey) > 0 {
+		nextCursor = strconv.FormatUint(c.Store.scanCursors.alloc(lastKey, c.DB), 10)
 	}
 
 	c.w.WriteArray(2)
-	c.w.WriteBulkString(strconv.FormatUint(next, 10))
+	c.w.WriteBulkString(nextCursor)
 	c.w.WriteArray(len(batch))
 	for _, k := range batch {
 		c.w.WriteBulkString(k)

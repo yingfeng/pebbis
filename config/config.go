@@ -109,6 +109,11 @@ type Config struct {
 	// the very next write, so we aim a bit lower.
 	EvictionTargetRatio float64
 
+	// LuaTimeLimit mirrors Redis' lua-time-limit: seconds after which a busy
+	// script is considered stuck. It is accepted and reported by CONFIG but
+	// only advisory here.
+	LuaTimeLimit int
+
 	// Databases is the number of addressable logical databases (SELECT n).
 	Databases int
 	// ShardCount is the number of dict shards per database. Power of two.

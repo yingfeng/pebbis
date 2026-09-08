@@ -203,6 +203,42 @@ func (e *Engine) ScanKeys(prefix []byte, fn func(key []byte) error) error {
 	return iter.Error()
 }
 
+// ScanKeysFrom is like ScanKeys but resumes strictly after startKey, so a
+// caller can page through the keyspace without re-scanning already-returned
+// keys. A nil startKey begins at the first key under the prefix. It backs
+// SCAN's cursor: the cursor encodes the last key returned, and the next call
+// seeks to the first key greater than it. This terminates even while the
+// keyspace grows, because iteration always advances to the lexicographic end.
+func (e *Engine) ScanKeysFrom(prefix, startKey []byte, fn func(key []byte) error) error {
+	iter, err := e.db.NewIter(&pebble.IterOptions{
+		LowerBound: prefix,
+		UpperBound: prefixEnd(prefix),
+	})
+	if err != nil {
+		return err
+	}
+	defer func() { _ = iter.Close() }()
+
+	var valid bool
+	if len(startKey) == 0 {
+		valid = iter.First()
+	} else {
+		// Seek to the first key strictly greater than startKey. Appending 0x00
+		// yields a key that sits just above startKey (no key can fall in the
+		// open interval (startKey, startKey+0x00)), so SeekGE lands past it.
+		seek := make([]byte, len(startKey)+1)
+		copy(seek, startKey)
+		seek[len(startKey)] = 0x00
+		valid = iter.SeekGE(seek)
+	}
+	for ; valid; valid = iter.Next() {
+		if err := fn(iter.Key()); err != nil {
+			return err
+		}
+	}
+	return iter.Error()
+}
+
 // Checkpoint creates a consistent hard-link snapshot of the store in destDir.
 func (e *Engine) Checkpoint(destDir string) error {
 	return e.db.Checkpoint(destDir)

@@ -21,12 +21,20 @@ type Expirer struct {
 	cfg   *config.Config
 
 	expired atomic.Int64
+	// enabled toggles the active expiry cycle (DEBUG SET-ACTIVE-EXPIRE).
+	// Lazy expiry on access is unaffected, matching Redis.
+	enabled atomic.Bool
 }
 
 // NewExpirer builds an expirer over eng and dict.
 func NewExpirer(eng *storage.Engine, dict *Dict, clock *Clock, cfg *config.Config) *Expirer {
-	return &Expirer{eng: eng, dict: dict, clock: clock, cfg: cfg}
+	x := &Expirer{eng: eng, dict: dict, clock: clock, cfg: cfg}
+	x.enabled.Store(true)
+	return x
 }
+
+// SetEnabled turns the active expiry cycle on or off (DEBUG SET-ACTIVE-EXPIRE).
+func (x *Expirer) SetEnabled(on bool) { x.enabled.Store(on) }
 
 // Expired returns the cumulative number of keys reaped.
 func (x *Expirer) Expired() int64 { return x.expired.Load() }
@@ -40,6 +48,9 @@ func (x *Expirer) Run(stop <-chan struct{}) {
 		case <-stop:
 			return
 		case <-t.C:
+			if !x.enabled.Load() {
+				continue
+			}
 			if _, err := x.Cycle(); err != nil {
 				return
 			}

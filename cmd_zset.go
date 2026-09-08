@@ -1,6 +1,7 @@
 package redistore
 
 import (
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -75,6 +76,10 @@ func (s *Store) zAdd(db uint16, key string, members []storage.Member, opt ZAddOp
 		if opt.INCR {
 			if exists {
 				newScore = old + m.Score
+			}
+			if math.IsNaN(newScore) {
+				// e.g. +inf incremented by -inf; Redis rejects NaN outright.
+				return 0, nil, &protoError{"ERR resulting score is not a number (NaN)"}
 			}
 		}
 		if exists {
@@ -319,6 +324,9 @@ parse:
 		if err != nil {
 			return err
 		}
+		if math.IsNaN(score) {
+			return &protoError{"ERR value is not a valid float"}
+		}
 		members = append(members, storage.Member{Score: score, Member: string(args[i+1])})
 	}
 	if i < len(args) {
@@ -433,6 +441,9 @@ func cmdZIncrBy(c *Ctx, args [][]byte) error {
 	if err != nil {
 		return err
 	}
+	if math.IsNaN(d) {
+		return &protoError{"ERR value is not a valid float"}
+	}
 	v, err := c.Store.zIncrBy(c.DB, string(args[0]), d, string(args[2]))
 	if err != nil {
 		return err
@@ -506,9 +517,9 @@ func parseScoreBound(b []byte) (float64, bool, error) {
 	return v, excl, err
 }
 
-const (
-	infPos = 1e308
-	infNeg = -1e308
+var (
+	infPos = math.Inf(1)
+	infNeg = math.Inf(-1)
 )
 
 // cmdZRevRange is the legacy ZREVRANGE form: ZRANGE key start stop REV.
@@ -583,6 +594,19 @@ func cmdZRangeByScore(c *Ctx, args [][]byte) error {
 	}
 	writeMembers(c, items, o.withScore)
 	return nil
+}
+
+func cmdZRevRangeByScore(c *Ctx, args [][]byte) error {
+	if len(args) < 3 {
+		return WrongArgs("zrevrangebyscore")
+	}
+	// Redis: ZREVRANGEBYSCORE key max min ... is equivalent to
+	// ZRANGEBYSCORE key min max REV (bounds are given high-to-low).
+	newArgs := make([][]byte, len(args))
+	copy(newArgs, args)
+	newArgs[1], newArgs[2] = args[2], args[1]
+	newArgs = append(newArgs, []byte("REV"))
+	return cmdZRangeByScore(c, newArgs)
 }
 
 func cmdZCount(c *Ctx, args [][]byte) error {
@@ -792,6 +816,15 @@ func applyLimit(items []storage.Member, offset, count int) []storage.Member {
 
 // formatFloat renders a score the way Redis does.
 func formatFloat(f float64) string {
+	if math.IsInf(f, 1) {
+		return "inf"
+	}
+	if math.IsInf(f, -1) {
+		return "-inf"
+	}
+	if math.IsNaN(f) {
+		return "nan"
+	}
 	if f == float64(int64(f)) && f >= -1e17 && f <= 1e17 {
 		return strconv.FormatInt(int64(f), 10)
 	}

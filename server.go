@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/gobwas/glob"
+	"github.com/redistore/redistore/glob"
 	"github.com/tidwall/redcon"
 )
 
@@ -318,6 +318,13 @@ func (srv *Server) handle(conn redcon.Conn, cmd redcon.Command) {
 		w:          conn,
 	}
 
+	// Redis rejects write commands with an OOM error once the noeviction
+	// budget is exhausted.
+	if cm.write && srv.store.memoryFull() {
+		conn.WriteError(OOM(upper).Error())
+		return
+	}
+
 	// Write commands run under the global write lock: a lost update between
 	// two concurrent read-modify-writes on one key would violate Redis'
 	// atomic-command contract. Reads stay parallel.
@@ -365,7 +372,15 @@ type connState struct {
 	inTxn    bool
 	queue    [][]string
 	watched  map[string]uint64
-	dirtyTxn bool // a queued command failed to parse
+	// watchedExpiry records each watched key's expiry at WATCH time (-1 when
+	// the key did not exist, 0 when it had no TTL). watchedStale records
+	// whether the key was ALREADY logically expired at WATCH time. Together
+	// they let EXEC distinguish a key that expired while being watched (a
+	// modification) from one that was already stale when WATCHed (logically
+	// non-existent, not a modification).
+	watchedExpiry map[string]int64
+	watchedStale  map[string]bool
+	dirtyTxn      bool // a queued command failed to parse
 }
 
 func (srv *Server) connState(conn redcon.Conn) *connState {

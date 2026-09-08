@@ -1,10 +1,9 @@
 package redistore
 
 import (
+	"strconv"
 	"strings"
 	"time"
-
-	"github.com/redistore/redistore/storage"
 )
 
 // Stream commands: the reliable-queue surface. Entries are delivered to a
@@ -89,22 +88,79 @@ func cmdXAdd(c *Ctx, args [][]byte) error {
 		nomkstream = true
 		i++
 	}
+	// Optional inline trimming, e.g. `XADD key MAXLEN ~ 1000 id f v`.
+	maxlen := -1
+	var minid streamID
+	trimMinID := false
+	if i < len(args) {
+		switch strings.ToUpper(string(args[i])) {
+		case "MAXLEN":
+			i++
+			for i < len(args) && (strings.EqualFold(string(args[i]), "~") || strings.EqualFold(string(args[i]), "=")) {
+				i++ // approximate/exact markers: executed exactly either way
+			}
+			if i >= len(args) {
+				return ErrSyntax
+			}
+			n, err := atoi(args[i])
+			if err != nil || n < 0 {
+				return ErrNotInteger
+			}
+			maxlen = n
+			i++
+		case "MINID":
+			i++
+			for i < len(args) && (strings.EqualFold(string(args[i]), "~") || strings.EqualFold(string(args[i]), "=")) {
+				i++
+			}
+			if i >= len(args) {
+				return ErrSyntax
+			}
+			parsed, err := parseStreamID(string(args[i]))
+			if err != nil {
+				return err
+			}
+			minid = parsed
+			trimMinID = true
+			i++
+		}
+		if i+1 < len(args) && strings.EqualFold(string(args[i]), "LIMIT") {
+			i += 2 // accepted for compatibility; trimming is exact here
+		}
+	}
 	if i >= len(args) {
 		return WrongArgs("xadd")
 	}
 	var id streamID
 	auto := string(args[i]) == "*"
-	if !auto {
-		// Unlike XRANGE bounds, XADD requires a fully qualified "ms-seq" ID.
-		if !strings.Contains(string(args[i]), "-") {
+	partialAuto := false
+	var partialMS uint64
+	idStr := string(args[i])
+	if !auto && strings.HasSuffix(idStr, "-*") {
+		// "ms-*" asks the server to auto-generate the sequence part while
+		// keeping the caller-supplied millisecond part fixed.
+		msStr := idStr[:len(idStr)-2]
+		v, perr := strconv.ParseUint(msStr, 10, 64)
+		if perr != nil {
 			return &protoError{"ERR Invalid stream ID specified as stream command argument"}
 		}
+		partialAuto = true
+		partialMS = v
+		i++
+	} else if !auto {
+		// A bare millisecond part ("152...") defaults the sequence to 0,
+		// matching Redis.
 		var err error
-		if id, err = parseStreamID(string(args[i])); err != nil {
+		if id, err = parseStreamID(idStr); err != nil {
 			return err
 		}
+		if id.ms == 0 && id.seq == 0 {
+			return &protoError{"ERR The ID specified in XADD must be greater than 0-0"}
+		}
+		i++
+	} else {
+		i++
 	}
-	i++
 	if (len(args)-i)%2 != 0 {
 		return &protoError{"ERR wrong number of arguments for XADD: expected an even number of field-value pairs"}
 	}
@@ -113,9 +169,19 @@ func cmdXAdd(c *Ctx, args [][]byte) error {
 		fields = append(fields, streamField{Field: string(args[i]), Value: string(args[i+1])})
 	}
 
-	stored, err := c.Store.xAdd(c.DB, key, id, auto, fields, nomkstream)
+	stored, err := c.Store.xAdd(c.DB, key, id, auto, partialAuto, partialMS, fields, nomkstream)
 	if err != nil {
 		return err
+	}
+	if maxlen >= 0 {
+		if _, err := c.Store.xTrimMaxlen(c.DB, key, maxlen); err != nil {
+			return err
+		}
+	}
+	if trimMinID {
+		if _, err := c.Store.xTrimMinID(c.DB, key, minid); err != nil {
+			return err
+		}
 	}
 	if nomkstream && stored.equal(streamID{}) {
 		c.writeNull()
@@ -264,7 +330,7 @@ func cmdXTrim(c *Ctx, args [][]byte) error {
 
 // parseStreamsTail reads the STREAMS key... id... tail of XREAD / XREADGROUP.
 // Every key gets exactly one ID.
-func parseStreamsTail(args [][]byte, off int) ([]string, []streamID, error) {
+func parseStreamsTail(c *Ctx, args [][]byte, off int) ([]string, []streamID, error) {
 	rest := args[off:]
 	if len(rest) < 3 || !strings.EqualFold(string(rest[0]), "STREAMS") {
 		return nil, nil, ErrSyntax
@@ -276,16 +342,27 @@ func parseStreamsTail(args [][]byte, off int) ([]string, []streamID, error) {
 	}
 	keys := byteSliceToStrings(rest[:ids])
 	out := make([]streamID, 0, ids)
-	for _, a := range rest[ids:] {
-		if string(a) == ">" {
+	for ki, a := range rest[ids:] {
+		switch string(a) {
+		case ">":
 			out = append(out, streamID{ms: ^uint64(0), seq: ^uint64(0)}) // marker, XREADGROUP only
-			continue
+		case "$":
+			// "$" is the ID of the stream's last entry; reading from it
+			// returns only entries strictly newer than what exists now.
+			if last, ok, err := c.Store.lastStreamEntryID(c.DB, keys[ki]); err != nil {
+				return nil, nil, err
+			} else if ok {
+				out = append(out, last)
+			} else {
+				out = append(out, streamID{})
+			}
+		default:
+			id, err := parseStreamID(string(a))
+			if err != nil {
+				return nil, nil, err
+			}
+			out = append(out, id)
 		}
-		id, err := parseStreamID(string(a))
-		if err != nil {
-			return nil, nil, err
-		}
-		out = append(out, id)
 	}
 	return keys, out, nil
 }
@@ -323,7 +400,7 @@ func cmdXRead(c *Ctx, args [][]byte) error {
 		}
 	}
 streams:
-	keys, ids, err := parseStreamsTail(args, i)
+	keys, ids, err := parseStreamsTail(c, args, i)
 	if err != nil {
 		return err
 	}
@@ -369,7 +446,7 @@ streams:
 				timeout = remaining
 			}
 		}
-		if !c.Store.blockSleepSince(bvkeysVersion, timeout) {
+		if !c.blockSleep(bvkeysVersion, timeout) {
 			c.writeNull()
 			return nil
 		}
@@ -393,6 +470,16 @@ func cmdXGroupCreate(c *Ctx, args [][]byte) error {
 		return &protoError{"BUSYGROUP consumer group name '" + group + "' already exists"}
 	}
 
+	// XGROUP CREATE requires the stream to already exist unless MKSTREAM is
+	// supplied. An absent stream (no entries) is an error, matching Redis.
+	if !mkstream {
+		if _, ok, err := c.Store.lastStreamEntryID(c.DB, key); err != nil {
+			return err
+		} else if !ok {
+			return &protoError{"ERR The XGROUP subcommand requires the key to exist. Note that for CREATE you may want to use the MKSTREAM option to create an empty stream automatically."}
+		}
+	}
+
 	if idStr == "$" {
 		// "$" means "start from the stream's last entry" - which on an empty
 		// stream is 0-0, so everything added afterwards is new.
@@ -412,21 +499,6 @@ func cmdXGroupCreate(c *Ctx, args [][]byte) error {
 	id, err := parseStreamID(idStr)
 	if err != nil {
 		return err
-	}
-	if !mkstream {
-		if _, _, _, ok, _ := c.Store.getTyped(0, ""); !ok {
-			// Stream existence is implied by any entry; creating a group on an
-			// absent stream without MKSTREAM is an error, matching Redis.
-			var n int64
-			prefix := streamEntryPrefix(c.DB, key)
-			_ = c.Store.eng.ScanKeys(prefix, func([]byte) error {
-				n++
-				return storage.ErrStop
-			})
-			if n == 0 {
-				return &protoError{"ERR The XGROUP subcommand requires the key to exist. Note that for CREATE you may want to use the MKSTREAM option to create an empty stream automatically."}
-			}
-		}
 	}
 	if err := c.Store.groupSet(c.DB, key, group, id); err != nil {
 		return err
@@ -516,9 +588,17 @@ func cmdXReadGroup(c *Ctx, args [][]byte) error {
 		}
 	}
 streams:
-	keys, ids, err := parseStreamsTail(args, i)
+	keys, ids, err := parseStreamsTail(c, args, i)
 	if err != nil {
 		return err
+	}
+	// A key that exists as a non-stream type is a WRONGTYPE error, matching Redis.
+	for _, k := range keys {
+		if _, _, _, ok, _ := c.Store.getTyped(c.DB, k); ok {
+			if _, isStream, _ := c.Store.lastStreamEntryID(c.DB, k); !isStream {
+				return ErrWrongType
+			}
+		}
 	}
 
 	newOnly := len(ids) > 0 && ids[0].equal(streamID{ms: ^uint64(0), seq: ^uint64(0)})
@@ -532,9 +612,8 @@ streams:
 			if err != nil {
 				return err
 			}
-			if len(entries) == 0 {
-				continue
-			}
+			// History mode replies with the stream even when the PEL is empty
+			// ([[stream, []]]), matching Redis; only ">" mode omits idle keys.
 			reply = append(reply, k)
 			batches = append(batches, entries)
 		}
@@ -545,7 +624,7 @@ streams:
 				return err
 			}
 			if !found {
-				return &protoError{"ERR NOGROUP No such consumer group '" + group + "' for key name '" + k + "'"}
+				return &protoError{"NOGROUP No such consumer group '" + group + "' for key name '" + k + "'"}
 			}
 			entries, err := c.Store.xRange(c.DB, k, nextID(last), streamID{ms: ^uint64(0), seq: ^uint64(0)}, count, false)
 			if err != nil {
@@ -597,7 +676,7 @@ streams:
 				}
 				t = remaining
 			}
-			if !c.Store.blockSleepSince(bvkeysVersion, t) {
+			if !c.blockSleep(bvkeysVersion, t) {
 				c.writeNull()
 				return nil
 			}
@@ -688,14 +767,12 @@ func cmdXPending(c *Ctx, args [][]byte) error {
 	}
 	if len(args) >= 5 {
 		var err error
-		if string(args[2]) == "-" {
-			start = streamID{}
-		} else if start, err = parseStreamID(string(args[2])); err != nil {
+		// parseStreamBound understands "-", "+", plain IDs and Redis exclusive
+		// "(id" bounds, matching XRANGE semantics.
+		if start, err = parseStreamBound(args[2], true); err != nil {
 			return err
 		}
-		if string(args[3]) == "+" {
-			end = streamID{ms: ^uint64(0), seq: ^uint64(0)}
-		} else if end, err = parseStreamID(string(args[3])); err != nil {
+		if end, err = parseStreamBound(args[3], false); err != nil {
 			return err
 		}
 		v, err := atoi(args[4])

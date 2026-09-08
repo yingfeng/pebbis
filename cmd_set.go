@@ -144,6 +144,12 @@ func (s *Store) setMove(db uint16, src, dst, member string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
+	// Redis's smoveCommand looks up both keys and validates their types
+	// *before* testing membership, so a wrong-type destination must error
+	// even when the member is absent from the (possibly missing) source.
+	if _, _, _, err := s.aggEncoding(db, dst, config.TypeSet); err != nil {
+		return false, err
+	}
 	if _, ok := a.set[member]; !ok {
 		return false, nil
 	}
@@ -336,9 +342,16 @@ func cmdSRandMember(c *Ctx, args [][]byte) error {
 	}
 	if n < 0 {
 		// Negative count allows repeats.
-		n = -n
-		c.w.WriteArray(int(n))
-		for range n {
+		k := -n
+		if k < 0 {
+			return &protoError{"ERR value is out of range"}
+		}
+		if k > 1<<30 {
+			return &protoError{"ERR value is out of range"}
+		}
+		m := int(k)
+		c.w.WriteArray(m)
+		for range m {
 			c.w.WriteBulkString(members[rand.IntN(len(members))])
 		}
 		return nil

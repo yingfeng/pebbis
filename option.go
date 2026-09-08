@@ -69,7 +69,11 @@ func parseSetOption(args [][]byte, i int) (SetOption, error) {
 			if v <= 0 {
 				return opt, ErrInvalidExpire
 			}
-			opt.EX = time.Duration(v) * time.Second
+			ms := v * 1000
+			if v != 0 && ms/1000 != v {
+				return opt, ErrInvalidExpire
+			}
+			opt.EX = time.Duration(ms) * time.Millisecond
 		case foldEqual(arg, "PX"):
 			v, err := nextInt(args, &i, "PX")
 			if err != nil {
@@ -176,9 +180,11 @@ func toInt64(b []byte) (int64, error) {
 	return v, nil
 }
 
-// toFloat parses a command argument as a float64.
+// toFloat parses a command argument as a float64. Redis rejects surrounding
+// whitespace, so we parse the raw bytes (unlike strconv defaults which would
+// accept it after trimming).
 func toFloat(b []byte) (float64, error) {
-	v, err := strconv.ParseFloat(strings.TrimSpace(string(b)), 64)
+	v, err := strconv.ParseFloat(string(b), 64)
 	if err != nil {
 		return 0, ErrNotFloat
 	}

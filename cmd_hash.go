@@ -383,6 +383,13 @@ func cmdHRandField(c *Ctx, args [][]byte) error {
 	n := count
 	if n < 0 {
 		n = -n
+		if n < 0 {
+			// -MinInt64 overflows; Redis rejects the overflow count.
+			return &protoError{"ERR value is out of range"}
+		}
+	}
+	if allowDup && n > 1<<30 {
+		return &protoError{"ERR value is out of range"}
 	}
 	if n > len(fields) && !allowDup {
 		n = len(fields)
@@ -434,11 +441,15 @@ func eqFold(b []byte, s string) bool {
 		return false
 	}
 	for i := range b {
-		c := b[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 'a' - 'A'
+		cb := b[i]
+		if cb >= 'A' && cb <= 'Z' {
+			cb += 'a' - 'A'
 		}
-		if c != s[i] {
+		cs := s[i]
+		if cs >= 'A' && cs <= 'Z' {
+			cs += 'a' - 'A'
+		}
+		if cb != cs {
 			return false
 		}
 	}

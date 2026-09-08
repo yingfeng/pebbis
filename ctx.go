@@ -1,6 +1,10 @@
 package redistore
 
-import "github.com/tidwall/redcon"
+import (
+	"time"
+
+	"github.com/tidwall/redcon"
+)
 
 // Writer is the RESP response surface a command handler may use.
 //
@@ -39,7 +43,22 @@ type Ctx struct {
 	// it (SUBSCRIBE) or block on it (BLPOP).
 	conn redcon.Conn
 
+	// noBlock marks execution inside MULTI/EXEC: blocking commands must behave
+	// like their non-blocking forms and reply nil on empty keys instead of
+	// parking the connection (Redis semantics).
+	noBlock bool
+
 	w Writer
+}
+
+// blockSleep parks the connection until a push bumps the version past since.
+// In a MULTI/EXEC context it returns false immediately, so the caller writes a
+// nil reply instead of blocking.
+func (c *Ctx) blockSleep(since uint64, timeout time.Duration) bool {
+	if c.noBlock {
+		return false
+	}
+	return c.Store.blockSleepSince(since, timeout)
 }
 
 // Client returns the per-connection state, or nil when the command did not come

@@ -1,6 +1,7 @@
 package redistore
 
 import (
+	"math"
 	"time"
 
 	"github.com/redistore/redistore/config"
@@ -293,14 +294,22 @@ func (s *Store) setExpiry(db uint16, key string, at time.Time, opt ExpireOption)
 	}
 	newExpire := at.UnixMilli()
 
+	// Redis treats a key with no existing TTL as having an infinite TTL: GT can
+	// never extend it (always fails) and LT can always shorten it (always
+	// applies). Represent that with the maximum possible expiry.
+	cur := curExpire
+	if cur == 0 {
+		cur = math.MaxInt64
+	}
+
 	switch {
 	case opt.NX && curExpire != 0:
 		return 0, nil
 	case opt.XX && curExpire == 0:
 		return 0, nil
-	case opt.GT && curExpire != 0 && newExpire <= curExpire:
+	case opt.GT && newExpire <= cur:
 		return 0, nil
-	case opt.LT && curExpire != 0 && newExpire >= curExpire:
+	case opt.LT && newExpire >= cur:
 		return 0, nil
 	}
 
@@ -371,6 +380,7 @@ func (s *Store) flushDB(db uint16) error {
 	// [tag][db+1] is the first key of the next one.
 	for _, seg := range []byte{
 		storage.SegHash, storage.SegList, storage.SegSet, storage.SegZSetM, storage.SegZSetS,
+		SegStreamEntry, SegStreamGroup, SegStreamPEL,
 	} {
 		lo := []byte{seg, byte(db >> 8), byte(db)}
 		hi := []byte{seg, byte((db + 1) >> 8), byte(db + 1)}

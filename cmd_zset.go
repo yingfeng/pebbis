@@ -117,9 +117,7 @@ func (s *Store) zAdd(db uint16, key string, members []storage.Member, opt ZAddOp
 
 // zAddSparse adds or updates members of a sparse sorted set in place.
 func (s *Store) zAddSparse(db uint16, key string, members []storage.Member, opt ZAddOption, curCount, expireAt int64) (int64, *float64, error) {
-	// Serialise against a concurrent element scan of this key.
-	s.aggMu.Lock()
-	defer s.aggMu.Unlock()
+	// Per-key lock held by the caller (dispatch) for the whole command.
 	seg, _ := storage.SegmentFor(config.TypeZSet)
 	batch := s.eng.Batch()
 	defer batch.Close()

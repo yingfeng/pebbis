@@ -296,8 +296,14 @@ func cmdStrLen(c *Ctx, args [][]byte) error {
 }
 
 // incrBy implements INCR / DECR / INCRBY / DECRBY.
+//
+// It is lock-free: instead of a read-modify-write guarded by the per-key lock, it
+// appends a per-key merge operand. Pebble folds every operand associatively via
+// the merge operator (storage/merge.go), so concurrent increments on the same key
+// never serialise and never lose an update. The merge operator also preserves the
+// key's TTL (carried in the value header), so an INCR leaves the expiry intact.
 func incrBy(c *Ctx, key string, delta int64) error {
-	cur, typ, expireAt, ok, err := c.Store.getTyped(c.DB, key)
+	cur, typ, _, ok, err := c.Store.getTyped(c.DB, key)
 	if err != nil {
 		return err
 	}
@@ -316,11 +322,24 @@ func incrBy(c *Ctx, key string, delta int64) error {
 	if (delta > 0 && n > maxInt64-delta) || (delta < 0 && n < minInt64-delta) {
 		return ErrOverflow
 	}
-	next := n + delta
-	if err := c.Store.setStringSimple(c.DB, key, []byte(strconv.FormatInt(next, 10)), expireAt); err != nil {
+	if err := c.Store.eng.Merge(storage.EncodeDataKey(c.DB, key), storage.EncodeIntDelta(delta)); err != nil {
 		return err
 	}
-	c.writeInt(next)
+	// Read back the resolved, authoritative value to return to the client.
+	val, exp, err := c.Store.getCounterValue(c.DB, key)
+	if err != nil {
+		return err
+	}
+	res, perr := strconv.ParseInt(string(val), 10, 64)
+	if perr != nil {
+		// Stacked concurrent increments pushed the result past int64: Redis answers
+		// with an overflow error too.
+		return ErrOverflow
+	}
+	// Counters resolve through Pebble, so keep the dict metadata-only and flag the
+	// key; the next read re-reads the merged value (no stale cache, no lock).
+	c.Store.dict.SetCounter(c.DB, key, exp)
+	c.writeInt(res)
 	return nil
 }
 

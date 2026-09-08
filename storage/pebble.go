@@ -39,6 +39,13 @@ func Open(cfg *config.Config) (*Engine, error) {
 		L0StopWritesThreshold:       cfg.L0StopWritesThreshold,
 		MaxConcurrentCompactions:    func() int { return min(8, max(2, runtime.NumCPU()/2)) },
 		Levels:                      levelOptions(),
+		// The commutative counter class (INCR/DECR/INCRBY/DECRBY/INCRBYFLOAT)
+		// sinks its read-modify-write into Pebble's merge operator, so increments
+		// on the same key never serialise on a mutex. See storage/merge.go.
+		Merger: &pebble.Merger{
+			Merge: counterMerge{}.Merge,
+			Name:  "redistore.counter",
+		},
 	}
 
 	inMemory := cfg.Dir == ""
@@ -136,6 +143,13 @@ func (e *Engine) Batch() *Batch {
 // Apply commits a batch atomically.
 func (e *Engine) Apply(b *Batch) error {
 	return e.db.Apply(b.b, e.writeOpt)
+}
+
+// Merge appends a merge operand for key. Used by the commutative counter class so
+// increments on a key are resolved associatively by the merge operator instead of
+// serialising on a per-key lock. See storage/merge.go.
+func (e *Engine) Merge(key, value []byte) error {
+	return e.db.Merge(key, value, e.writeOpt)
 }
 
 // DeleteRange removes every key in [start, end).

@@ -62,22 +62,22 @@ type Server struct {
 	psMu     sync.Mutex
 	channels map[string]int
 	patterns map[string]int
-
-	// writeMu serialises write commands. Every write is a read-modify-write
-	// over Pebble (load aggregate, edit, save batch), which loses updates when
-	// two writers race on one key. Redis gets its atomicity from a single
-	// thread; serialising writes reproduces that guarantee while reads stay
-	// fully parallel. Blocking commands are exempt - they may park inside the
-	// handler, which would deadlock every other writer.
-	writeMu sync.Mutex
 }
 
 // blockingCmds may park inside their handler while holding no other locks.
-// They are excluded from writeMu because they would otherwise serialise and
-// starve all writes for up to their whole timeout.
+// They are excluded from the per-key write lock because they would otherwise
+// serialise and starve all writes to that key for up to their whole timeout.
 var blockingCmds = map[string]bool{
 	"BLPOP": true, "BRPOP": true, "BRPOPLPUSH": true, "BLMOVE": true,
 	"BLMPOP": true, "BZPOPMIN": true, "BZPOPMAX": true, "BZMPOP": true,
+}
+
+// lockFreeCmds use Pebble's merge operator for an atomic, lock-free update (the
+// commutative counter class). They must NOT take the per-key dispatch lock: doing
+// so would serialise them for no benefit and defeat the optimisation. Their
+// correctness comes from the merge operator, not the lock.
+var lockFreeCmds = map[string]bool{
+	"INCR": true, "DECR": true, "INCRBY": true, "DECRBY": true, "INCRBYFLOAT": true,
 }
 
 // subscribe registers a subscriber and hands the connection to redcon, which
@@ -334,12 +334,22 @@ func (srv *Server) handle(conn redcon.Conn, cmd redcon.Command) {
 		return
 	}
 
-	// Write commands run under the global write lock: a lost update between
-	// two concurrent read-modify-writes on one key would violate Redis'
-	// atomic-command contract. Reads stay parallel.
-	if cm.write && !blockingCmds[upper] {
-		srv.writeMu.Lock()
-		defer srv.writeMu.Unlock()
+	// Per-key locking instead of a single global mutex, mirroring kvrocks'
+	// dispatch: every key the command touches is locked for the whole command,
+	// in a canonical descending shard order so overlapping key sets never
+	// deadlock. A write command takes the exclusive lock (serialising writers
+	// to the same key, preserving Redis' per-key atomicity and avoiding lost
+	// updates); a read takes the shared lock. Writers to different keys run
+	// fully concurrently, so Pebble's own internal concurrency is exercised.
+	// Blocking commands are exempt: they may park, which would otherwise hold
+	// the lock for their whole timeout. The commutative counter class is also
+	// exempt: it appends a per-key merge operand (resolved associatively by
+	// Pebble's merge operator) and is correct and lock-free without the lock.
+	if !blockingCmds[upper] && !lockFreeCmds[upper] {
+		if keys := commandKeys(upper, args); len(keys) > 0 {
+			unlock := srv.store.LockKeys(c.DB, keys, cm.write)
+			defer unlock()
+		}
 	}
 
 	start := time.Now()

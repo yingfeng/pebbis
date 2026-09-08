@@ -61,8 +61,8 @@ func (s *Store) listPushUnnotified(db uint16, key string, elems []string, left, 
 
 func (s *Store) listPushSparse(db uint16, key string, a *agg, elems []string, left bool) (int64, error) {
 	// Serialise against a concurrent element scan of this key.
-	s.aggMu.Lock()
-	defer s.aggMu.Unlock()
+	s.aggMu.lock(db, key)
+	defer s.aggMu.unlock(db, key)
 	batch := s.eng.Batch()
 	defer batch.Close()
 	if !a.sparse {
@@ -142,8 +142,8 @@ func (s *Store) listPop(db uint16, key string, n int, left bool) ([]string, erro
 	// The lock is taken only here (not around the whole function) because the
 	// inline path above delegates to saveAgg, which already locks aggMu and a
 	// Mutex/RWMutex is not reentrant.
-	s.aggMu.Lock()
-	defer s.aggMu.Unlock()
+	s.aggMu.lock(db, key)
+	defer s.aggMu.unlock(db, key)
 	batch := s.eng.Batch()
 	defer batch.Close()
 	if left {
@@ -230,8 +230,8 @@ func (s *Store) listSet(db uint16, key string, index int, val string) error {
 	a.list[idx] = val
 	if a.sparse {
 		// Serialise against a concurrent element scan of this key.
-		s.aggMu.Lock()
-		defer s.aggMu.Unlock()
+		s.aggMu.lock(db, key)
+		defer s.aggMu.unlock(db, key)
 		seq := a.seqs[idx]
 		if err := s.eng.Put(storage.EncodeListSeqKey(db, key, seq), []byte(val)); err != nil {
 			return err

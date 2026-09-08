@@ -42,6 +42,10 @@ type Entry struct {
 	version atomic.Uint64
 	// inline holds small values directly.
 	inline []byte
+	// counter marks keys maintained by the merge-operator INCR path. Their
+	// authoritative value lives in Pebble (resolved by the merge operator), so the
+	// dict keeps only metadata and reads fall through to Pebble.
+	counter bool
 }
 
 // newEntry builds an entry, inlining payload when it is small enough.
@@ -200,6 +204,14 @@ func (e *Entry) Type() uint8 { return e.typ }
 
 // Inline returns the inlined value, or nil when the value is stored out of line.
 func (e *Entry) Inline() []byte { return e.inline }
+
+// IsCounter reports whether the key is maintained by the merge-operator INCR path.
+// Such keys keep only metadata in the dict; their value must be read from Pebble.
+func (e *Entry) IsCounter() bool { return e.counter }
+
+// SetCounter flips the counter flag. It is only called from the dict (under the
+// shard lock), so a plain assignment is safe.
+func (e *Entry) SetCounter(v bool) { e.counter = v }
 
 // Size returns the estimated memory footprint in bytes.
 func (e *Entry) Size() uint32 { return e.size }

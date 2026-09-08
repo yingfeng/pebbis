@@ -20,8 +20,14 @@ import (
 func (s *Store) getTyped(db uint16, key string) (payload []byte, typ uint8, expireAt int64, ok bool, err error) {
 	now := s.clock.NowMilli()
 
+	// Remember whether this key is a counter so the re-admit below keeps the flag.
+	var wasCounter bool
 	if e, found := s.dict.Lookup(db, key); found {
-		if inl := e.Inline(); len(inl) > 0 {
+		if e.IsCounter() {
+			// Counter value is resolved through the merge operator in Pebble, so the
+			// dict holds only metadata; always read the authoritative value below.
+			wasCounter = true
+		} else if inl := e.Inline(); len(inl) > 0 {
 			s.stats.hits.Add(1)
 			s.touch(db, key)
 			return inl, e.Type(), e.Expiry(), true, nil
@@ -52,9 +58,14 @@ func (s *Store) getTyped(db uint16, key string) (payload []byte, typ uint8, expi
 		return nil, 0, 0, false, nil
 	}
 
-	// Re-admit into the index: this covers both lazy startup and re-access
-	// after an eviction in persist mode.
-	s.dict.Set(db, key, typ, expireAt, payload)
+	// Re-admit into the index. Counters stay metadata-only and keep the counter
+	// flag, so the next access re-reads the merged value from Pebble; this is what
+	// keeps the index correct under concurrent increments without a per-key lock.
+	if wasCounter {
+		s.dict.SetCounter(db, key, expireAt)
+	} else {
+		s.dict.Set(db, key, typ, expireAt, payload)
+	}
 	s.stats.hits.Add(1)
 	s.touch(db, key)
 
@@ -63,6 +74,31 @@ func (s *Store) getTyped(db uint16, key string) (payload []byte, typ uint8, expi
 	out := make([]byte, len(payload))
 	copy(out, payload)
 	return out, typ, expireAt, true, nil
+}
+
+// getCounterValue reads the on-disk value of a counter key directly from Pebble,
+// bypassing the dict, so it always reflects the value resolved by the merge
+// operator. Used by the lock-free INCR/DECR/INCRBY/DECRBY/INCRBYFLOAT path to
+// obtain the authoritative value to return to the client.
+func (s *Store) getCounterValue(db uint16, key string) (val []byte, expireAt int64, err error) {
+	v, release, err := s.eng.Get(storage.EncodeDataKey(db, key))
+	if err == storage.ErrNotFound {
+		return nil, 0, nil
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	defer release()
+	typ, exp, payload, err := storage.DecodeValue(v)
+	if err != nil {
+		return nil, 0, err
+	}
+	if typ != config.TypeString {
+		return nil, 0, ErrWrongType
+	}
+	out := make([]byte, len(payload))
+	copy(out, payload)
+	return out, exp, nil
 }
 
 // getString returns the string value at key.
@@ -206,13 +242,12 @@ func (s *Store) putValue(db uint16, key string, typ uint8, val []byte, expireAtM
 // their per-element keys, otherwise the elements would outlive the key itself.
 // It serialises against a concurrent element scan (readers hold RLock).
 func (s *Store) deleteKey(db uint16, key string) (bool, error) {
-	s.aggMu.Lock()
-	defer s.aggMu.Unlock()
+	// Per-key lock held by the caller (dispatch / direct API) for the whole command.
 	return s.deleteKeyLocked(db, key)
 }
 
 // deleteKeyLocked is deleteKey without the aggregate lock; used when the caller
-// already holds aggMu (e.g. listPop emptying a sparse list).
+// already holds aggMu via keyMu at dispatch (e.g. listPop emptying a sparse list).
 func (s *Store) deleteKeyLocked(db uint16, key string) (bool, error) {
 	typ, found, err := s.typeOf(db, key)
 	if err != nil {

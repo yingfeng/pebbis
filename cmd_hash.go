@@ -54,9 +54,7 @@ func (s *Store) hashSet(db uint16, key string, pairs [][2][]byte, nx bool) (int6
 
 // hashSetSparse writes only the given fields into a sparse hash.
 func (s *Store) hashSetSparse(db uint16, key string, pairs [][2][]byte, nx bool, curCount, expireAt int64) (int64, error) {
-	// Serialise against a concurrent element scan of this key.
-	s.aggMu.Lock()
-	defer s.aggMu.Unlock()
+	// Per-key lock held by the caller (dispatch) for the whole command.
 	seg, _ := storage.SegmentFor(config.TypeHash)
 	batch := s.eng.Batch()
 	defer batch.Close()

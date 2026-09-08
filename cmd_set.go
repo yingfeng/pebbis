@@ -47,9 +47,7 @@ func (s *Store) setAdd(db uint16, key string, members []string) (int64, error) {
 
 // setAddSparse adds members to a sparse set without scanning the rest.
 func (s *Store) setAddSparse(db uint16, key string, members []string, curCount, expireAt int64) (int64, error) {
-	// Serialise against a concurrent element scan of this key.
-	s.aggMu.Lock()
-	defer s.aggMu.Unlock()
+	// Per-key lock held by the caller (dispatch) for the whole command.
 	seg, _ := storage.SegmentFor(config.TypeSet)
 	batch := s.eng.Batch()
 	defer batch.Close()

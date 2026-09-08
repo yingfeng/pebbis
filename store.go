@@ -16,6 +16,7 @@ package redistore
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -50,13 +51,22 @@ type Store struct {
 	cfg  atomic.Pointer[config.Config]
 	eng  *storage.Engine
 	dict *memory.Dict
-	// aggMu serialises a full element scan of a sparse aggregate (used by
-	// HGETALL/HSCAN/SMEMBERS/ZRANGE/...) against the commit of a sparse write.
-	// A sparse collection is one key per element plus a header; a reader assembles
-	// the collection by scanning every element key, so the scan must observe either
-	// the old or the new state, never a half-applied batch. Reads take RLock,
-	// writes (saveAgg / the point-write paths / deletion) take Lock.
-	aggMu sync.RWMutex
+	// keyMu is a sharded reader/writer lock indexed by (db, key). A command that
+	// touches a key takes the exclusive lock for the whole command; a read that
+	// scans an aggregate takes the shared lock. Different keys (almost always)
+	// map to different shards, so independent keys are served concurrently on
+	// multiple cores instead of being funnelled through one global mutex - this
+	// is the correct granularity (Redis' atomicity guarantee is per-key, not
+	// global) and lets Pebble's own internal concurrency do the heavy lifting.
+	keyMu keyLockTable
+	// aggMu is a SECOND, independent per-key sharded lock taken inside the
+	// aggregate storage layer (scanHash/scanSet/scanZSet/scanList vs saveAgg and
+	// the list mutations). It is separate from keyMu on purpose: dispatch holds
+	// keyMu for the whole command, so reusing it here would deadlock (Go's
+	// sync.RWMutex is not reentrant). Like keyMu it is key-sharded, so two
+	// commands on different keys no longer serialise against each other the way
+	// the old single global aggregate mutex did.
+	aggMu keyLockTable
 	// clock is exported to subpackages via accessor; kept unexported to keep
 	// the API surface small.
 	clock *memory.Clock
@@ -83,6 +93,104 @@ type Store struct {
 	scanCursors *scanCursorTable
 
 	stats Stats
+}
+
+// keyLockTable is a fixed array of reader/writer mutexes sharded by (db, key).
+// This mirrors kvrocks' LockManager: a single command takes the lock for the
+// shard(s) its key(s) hash to, so writers to different keys land on different
+// shards and run in parallel (Pebble's own internal concurrency is finally
+// used) while writers to the SAME key are serialised, giving Redis' per-key
+// atomicity without funnelling every command through one global mutex. A fixed
+// array (not a slice) means the zero value is ready to use, so no initialisation
+// is needed.
+type keyLockTable struct {
+	shards [keyLockShards]sync.RWMutex
+}
+
+// keyLockShards is a power of two so shardIndex can mask instead of divide.
+// 8192 shards matches kvrocks' hash_power of 16 (65536) within an order of
+// magnitude while keeping the embedded-memory footprint small; raise it if
+// contention on hot keys shows up in profiles.
+const keyLockShards = 1 << 13 // 8192 shards
+
+func (t *keyLockTable) lock(db uint16, key string)   { t.shards[shardIndex(db, key)].Lock() }
+func (t *keyLockTable) unlock(db uint16, key string) { t.shards[shardIndex(db, key)].Unlock() }
+func (t *keyLockTable) rlock(db uint16, key string)   { t.shards[shardIndex(db, key)].RLock() }
+func (t *keyLockTable) runlock(db uint16, key string) { t.shards[shardIndex(db, key)].RUnlock() }
+
+// LockKeys acquires the per-key locks for every key in keys and returns an
+// unlock function. It mirrors kvrocks' MultiLockGuard: the shard indexes are
+// de-duplicated and then locked in a canonical DESCENDING order so that two
+// commands locking overlapping but differently-ordered key sets (e.g.
+// "RENAME a b" vs "RENAME b a") can never deadlock. The returned closure
+// releases the locks in the reverse (ascending) order.
+//
+// The lock is exclusive (write) or shared (read) for all keys uniformly: a write
+// command takes an exclusive lock on every key it touches (read or written),
+// exactly as kvrocks locks all of a command's keys for a kCmdWrite command.
+func (t *keyLockTable) lockAll(db uint16, keys []string, write bool) func() {
+	if len(keys) == 0 {
+		return func() {}
+	}
+	idxs := make([]int, 0, len(keys))
+	seen := make(map[int]struct{}, len(keys))
+	for _, k := range keys {
+		i := shardIndex(db, k)
+		if _, ok := seen[i]; ok {
+			continue // same shard already in the set: lock it once
+		}
+		seen[i] = struct{}{}
+		idxs = append(idxs, i)
+	}
+	// Canonical order: descending shard index. kvrocks uses
+	// std::set<unsigned, std::greater<unsigned>> for exactly this reason.
+	sort.Sort(sort.Reverse(sort.IntSlice(idxs)))
+	for _, i := range idxs {
+		if write {
+			t.shards[i].Lock()
+		} else {
+			t.shards[i].RLock()
+		}
+	}
+	return func() {
+		for i := len(idxs) - 1; i >= 0; i-- {
+			if write {
+				t.shards[idxs[i]].Unlock()
+			} else {
+				t.shards[idxs[i]].RUnlock()
+			}
+		}
+	}
+}
+
+// LockKey/UnlockKey/RLockKey/RUnlockKey are the single-key entry points used by
+// callers that already know the (db, key) they touch for the whole operation
+// (the embedded API, blocking commands that re-lock inside their handler).
+func (s *Store) LockKey(db uint16, key string)   { s.keyMu.lock(db, key) }
+func (s *Store) UnlockKey(db uint16, key string) { s.keyMu.unlock(db, key) }
+func (s *Store) RLockKey(db uint16, key string)   { s.keyMu.rlock(db, key) }
+func (s *Store) RUnlockKey(db uint16, key string) { s.keyMu.runlock(db, key) }
+
+// LockKeys is the multi-key entry point used by command dispatch. See
+// keyLockTable.lockAll for the ordering and deadlock-avoidance contract.
+func (s *Store) LockKeys(db uint16, keys []string, write bool) func() {
+	return s.keyMu.lockAll(db, keys, write)
+}
+
+// shardIndex maps (db, key) to a shard with FNV-1a. Cheap and good enough to
+// spread distinct keys across shards; collisions only cost extra (correct)
+// serialisation, never incorrectness.
+func shardIndex(db uint16, key string) int {
+	h := uint64(1469598103934665603) // FNV offset basis
+	for _, c := range [2]byte{byte(db >> 8), byte(db)} {
+		h ^= uint64(c)
+		h *= 16777619
+	}
+	for i := 0; i < len(key); i++ {
+		h ^= uint64(key[i])
+		h *= 16777619
+	}
+	return int(h & (keyLockShards - 1))
 }
 
 // memoryFull reports whether write commands must be rejected with an OOM

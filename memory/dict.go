@@ -153,6 +153,32 @@ func (d *Dict) Lookup(db uint16, key string) (*Entry, bool) {
 	return e, true
 }
 
+// SetCounter records that key is a counter maintained by the merge-operator INCR
+// path. It stores metadata only (no inline value) and flags the entry so reads
+// fall through to Pebble, where the authoritative merged value lives. The entry
+// is created if absent, so EXISTS/DBSIZE/TYPE observe the key immediately.
+func (d *Dict) SetCounter(db uint16, key string, expireAt int64) {
+	ds := d.dbShards(db)
+	s := ds.shardFor(key)
+	clock := d.clock.LRUClock()
+	s.mu.Lock()
+	if old, ok := s.m[key]; ok {
+		old.SetCounter(true)
+		old.SetExpiry(expireAt)
+		old.version.Store(old.bumpVersion())
+		s.mu.Unlock()
+		return
+	}
+	e := newEntry(key, config.TypeString, expireAt, nil, d.cfg.Load().InlineValueMaxSize, clock)
+	e.SetCounter(true)
+	e.lru = (uint32(lfuInitVal) << LRUClockBits) | (clock & lruClockMask)
+	e.version.Store(1)
+	s.m[key] = e
+	d.used.Add(int64(e.size))
+	s.mu.Unlock()
+	ds.trackInsert(s)
+}
+
 // Touch records an access for eviction bookkeeping. It is separate from Lookup
 // so that read paths can skip it when no eviction policy needs the data.
 func (d *Dict) Touch(db uint16, key string) {

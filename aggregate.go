@@ -127,8 +127,8 @@ func (s *Store) aggEncoding(db uint16, key string, typ byte) (obj storage.Object
 // setAddSparse / zAddSparse), so a sparse collection always commits as one unit.
 
 func (s *Store) scanHash(db uint16, key string) (map[string][]byte, error) {
-	s.aggMu.RLock()
-	defer s.aggMu.RUnlock()
+	s.aggMu.rlock(db, key)
+	defer s.aggMu.runlock(db, key)
 	out := map[string][]byte{}
 	prefix := storage.ElemPrefix(storage.SegHash, db, key)
 	err := s.eng.Scan(prefix, func(k, v []byte) error {
@@ -139,8 +139,8 @@ func (s *Store) scanHash(db uint16, key string) (map[string][]byte, error) {
 }
 
 func (s *Store) scanSet(db uint16, key string) (map[string]struct{}, error) {
-	s.aggMu.RLock()
-	defer s.aggMu.RUnlock()
+	s.aggMu.rlock(db, key)
+	defer s.aggMu.runlock(db, key)
 	out := map[string]struct{}{}
 	prefix := storage.ElemPrefix(storage.SegSet, db, key)
 	err := s.eng.ScanKeys(prefix, func(k []byte) error {
@@ -151,8 +151,8 @@ func (s *Store) scanSet(db uint16, key string) (map[string]struct{}, error) {
 }
 
 func (s *Store) scanZSet(db uint16, key string) (map[string]float64, error) {
-	s.aggMu.RLock()
-	defer s.aggMu.RUnlock()
+	s.aggMu.rlock(db, key)
+	defer s.aggMu.runlock(db, key)
 	out := map[string]float64{}
 	prefix := storage.ElemPrefix(storage.SegZSetM, db, key)
 	err := s.eng.Scan(prefix, func(k, v []byte) error {
@@ -170,8 +170,8 @@ func (s *Store) scanZSet(db uint16, key string) (map[string]float64, error) {
 }
 
 func (s *Store) scanList(db uint16, key string) ([]string, []int64, error) {
-	s.aggMu.RLock()
-	defer s.aggMu.RUnlock()
+	s.aggMu.rlock(db, key)
+	defer s.aggMu.runlock(db, key)
 	var elems []string
 	var seqs []int64
 	prefix := storage.ElemPrefix(storage.SegList, db, key)
@@ -204,8 +204,8 @@ func (s *Store) saveAgg(db uint16, key string, a *agg) error {
 	// Serialise against a concurrent element scan (readers hold RLock). The whole
 	// commit below - elements and header - is one atomic batch, but the scan must
 	// not observe it mid-apply.
-	s.aggMu.Lock()
-	defer s.aggMu.Unlock()
+	s.aggMu.lock(db, key)
+	defer s.aggMu.unlock(db, key)
 
 	wantSparse := !fitsInline(a)
 

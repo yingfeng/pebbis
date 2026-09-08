@@ -10,6 +10,7 @@ import (
 
 	"github.com/redistore/redistore/config"
 	"github.com/redistore/redistore/memory"
+	"github.com/redistore/redistore/storage"
 )
 
 // M1 completion for list, generic and string commands.
@@ -588,7 +589,7 @@ func cmdIncrByFloat(c *Ctx, args [][]byte) error {
 	if err := c.checkArgLen(len(args), 2); err != nil {
 		return err
 	}
-	cur, typ, expireAt, ok, err := c.Store.getTyped(c.DB, string(args[0]))
+	cur, typ, _, ok, err := c.Store.getTyped(c.DB, string(args[0]))
 	if err != nil {
 		return err
 	}
@@ -609,11 +610,20 @@ func cmdIncrByFloat(c *Ctx, args [][]byte) error {
 	if next.IsInf() {
 		return &protoError{"ERR increment would produce NaN or Infinity"}
 	}
-	s := formatPrecFloat(next)
-	if err := c.Store.setStringSimple(c.DB, string(args[0]), []byte(s), expireAt); err != nil {
+	// Lock-free atomic increment via the merge operator. We pass the delta as its
+	// decimal spelling so the operator reproduces the exact big.Float arithmetic
+	// above. The merged value is read back and returned (it may also fold in other
+	// concurrent increments), keeping Redis' "return the final value" semantics.
+	if err := c.Store.eng.Merge(storage.EncodeDataKey(c.DB, string(args[0])),
+		storage.EncodeFloatDelta(formatPrecFloat(inc))); err != nil {
 		return err
 	}
-	c.w.WriteBulkString(s)
+	val, exp, err := c.Store.getCounterValue(c.DB, string(args[0]))
+	if err != nil {
+		return err
+	}
+	c.Store.dict.SetCounter(c.DB, string(args[0]), exp)
+	c.w.WriteBulkString(string(val))
 	return nil
 }
 

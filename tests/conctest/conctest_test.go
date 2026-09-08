@@ -62,6 +62,13 @@ func scanCount(t *testing.T, fn func(cur uint64) (uint64, []string, error)) int 
 func TestRedistoreConcurrentSoak(t *testing.T) {
 	ctx := context.Background()
 	c := newClient()
+	// The soak runs against a live redistored (see package doc). Skip when no
+	// server is reachable so `make test` stays green in environments without one;
+	// run `make soak` (or set REDIS_ADDR) to actually execute the suite. This
+	// mirrors the skip-when-unavailable convention used by tests/miniredis.
+	if err := c.Ping(ctx).Err(); err != nil {
+		t.Skipf("redistored not reachable at %s: %v (run `make soak` or set REDIS_ADDR)", addr(), err)
+	}
 	if err := c.FlushDB(ctx).Err(); err != nil {
 		t.Fatalf("flush: %v", err)
 	}

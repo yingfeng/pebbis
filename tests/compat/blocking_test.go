@@ -134,7 +134,7 @@ func TestBLPopValidation(t *testing.T) {
 	c := setup(t)
 	assertErr(t, do(t, c, "BLPOP", "l"), errWrongArgs)
 	assertErr(t, do(t, c, "BLPOP", "l", "-1"), "timeout is negative")
-	assertErr(t, do(t, c, "BLPOP", "l", "abc"), errNotInt)
+	assertErr(t, do(t, c, "BLPOP", "l", "abc"), "timeout is not a float or out of range")
 }
 
 func TestRPopLPush(t *testing.T) {

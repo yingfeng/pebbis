@@ -58,6 +58,8 @@ type ExpireOption struct {
 // parseSetOption parses the trailing options of SET starting at args[i].
 func parseSetOption(args [][]byte, i int) (SetOption, error) {
 	var opt SetOption
+	var rawEX, rawPX, rawEXAT, rawPXAT int64
+	var givenEX, givenPX, givenEXAT, givenPXAT bool
 	for ; i < len(args); i++ {
 		arg := args[i]
 		switch {
@@ -66,40 +68,28 @@ func parseSetOption(args [][]byte, i int) (SetOption, error) {
 			if err != nil {
 				return opt, err
 			}
-			if v <= 0 {
-				return opt, ErrInvalidExpire
-			}
-			ms := v * 1000
-			if v != 0 && ms/1000 != v {
-				return opt, ErrInvalidExpire
-			}
-			opt.EX = time.Duration(ms) * time.Millisecond
+			rawEX, givenEX = v, true
+			opt.EX = time.Duration(v) * time.Second
 		case foldEqual(arg, "PX"):
 			v, err := nextInt(args, &i, "PX")
 			if err != nil {
 				return opt, err
 			}
-			if v <= 0 {
-				return opt, ErrInvalidExpire
-			}
+			rawPX, givenPX = v, true
 			opt.PX = time.Duration(v) * time.Millisecond
 		case foldEqual(arg, "EXAT"):
 			v, err := nextInt(args, &i, "EXAT")
 			if err != nil {
 				return opt, err
 			}
-			if v <= 0 {
-				return opt, ErrInvalidExpire
-			}
+			rawEXAT, givenEXAT = v, true
 			opt.EXAT = time.Unix(v, 0)
 		case foldEqual(arg, "PXAT"):
 			v, err := nextInt(args, &i, "PXAT")
 			if err != nil {
 				return opt, err
 			}
-			if v <= 0 {
-				return opt, ErrInvalidExpire
-			}
+			rawPXAT, givenPXAT = v, true
 			opt.PXAT = time.UnixMilli(v)
 		case foldEqual(arg, "KEEPTTL"):
 			opt.KEEPTTL = true
@@ -115,6 +105,33 @@ func parseSetOption(args [][]byte, i int) (SetOption, error) {
 	}
 	if opt.NX && opt.XX {
 		return opt, ErrSyntax
+	}
+	// At most one expire source: EX, PX, EXAT and PXAT are mutually exclusive.
+	// Redis checks the combination before the values, so "PX 6 EX 0" is a
+	// syntax error rather than an invalid expire time.
+	kinds := 0
+	for _, g := range []bool{givenEX, givenPX, givenEXAT, givenPXAT} {
+		if g {
+			kinds++
+		}
+	}
+	if kinds > 1 {
+		return opt, ErrSyntax
+	}
+	for _, g := range []struct {
+		given bool
+		v     int64
+	}{{givenEX, rawEX}, {givenPX, rawPX}, {givenEXAT, rawEXAT}, {givenPXAT, rawPXAT}} {
+		if g.given && g.v <= 0 {
+			return opt, ErrInvalidExpire
+		}
+	}
+	if rawEX > 0 {
+		ms := rawEX * 1000
+		if ms/1000 != rawEX {
+			return opt, ErrInvalidExpire
+		}
+		opt.EX = time.Duration(ms) * time.Millisecond
 	}
 	if opt.KEEPTTL && (opt.EX > 0 || opt.PX > 0 || !opt.EXAT.IsZero() || !opt.PXAT.IsZero()) {
 		return opt, ErrSyntax
@@ -137,17 +154,17 @@ func parseExpireOption(args [][]byte, i int) (ExpireOption, error) {
 		case foldEqual(arg, "LT"):
 			opt.LT = true
 		default:
-			return opt, ErrSyntax
+			return opt, &protoError{"ERR Unsupported option " + string(arg)}
 		}
 	}
 	if opt.NX && opt.XX {
-		return opt, ErrSyntax
+		return opt, &protoError{"ERR NX and XX options at the same time are not compatible"}
 	}
 	if opt.GT && opt.LT {
-		return opt, ErrSyntax
+		return opt, &protoError{"ERR GT, LT, and/or NX options at the same time are not compatible"}
 	}
 	if opt.NX && (opt.GT || opt.LT) {
-		return opt, ErrSyntax
+		return opt, &protoError{"ERR GT, LT, and/or NX options at the same time are not compatible"}
 	}
 	return opt, nil
 }

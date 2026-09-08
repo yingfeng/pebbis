@@ -58,7 +58,7 @@ func parseLexBound(b []byte) (lexBound, error) {
 		lb.excl = true
 		s = s[1:]
 	default:
-		return lb, ErrSyntax
+		return lb, &protoError{"ERR min or max not valid string range item"}
 	}
 	if s == "" {
 		return lb, ErrSyntax
@@ -211,7 +211,18 @@ func zOpResult(c *Ctx, keys []string, weights []float64, agg zAggMode, op int) (
 	for _, k := range keys {
 		a, err := c.Store.loadAgg(c.DB, k, config.TypeZSet)
 		if err != nil {
-			return nil, err
+			// Sets are valid inputs with an implicit score of 1 (real Redis
+			// semantics); hashes and strings stay a WRONGTYPE.
+			sa, serr := c.Store.loadAgg(c.DB, k, config.TypeSet)
+			if serr != nil {
+				return nil, serr
+			}
+			m := make(map[string]float64, len(sa.set))
+			for mem := range sa.set {
+				m[mem] = 1
+			}
+			sets = append(sets, m)
+			continue
 		}
 		sets = append(sets, a.zset)
 	}
@@ -302,13 +313,19 @@ func zApplyAgg(a, b float64, agg zAggMode) float64 {
 
 // zParseOpArgs splits "numkeys key... [WEIGHTS w...] [AGGREGATE m] [WITHSCORES]"
 // into its parts. withScores is only accepted by the non-storing forms.
-func zParseOpArgs(args [][]byte, allowWithScores bool) (keys []string, weights []float64, agg zAggMode, withScores bool, err error) {
+func zParseOpArgs(args [][]byte, allowWithScores bool, name string) (keys []string, weights []float64, agg zAggMode, withScores bool, err error) {
 	if len(args) < 1 {
-		return nil, nil, 0, false, WrongArgs("zunion")
+		return nil, nil, 0, false, WrongArgs(name)
 	}
 	nk, err := toInt64(args[0])
-	if err != nil || nk <= 0 || int(nk) > len(args)-1 {
-		return nil, nil, 0, false, &protoError{"ERR numkeys should be greater than 0 and no larger than the number of keys"}
+	if err != nil {
+		return nil, nil, 0, false, WrongArgs(name)
+	}
+	if nk <= 0 {
+		return nil, nil, 0, false, &protoError{"ERR at least 1 input key is needed for " + name}
+	}
+	if int(nk) > len(args)-1 {
+		return nil, nil, 0, false, ErrSyntax
 	}
 	keys = byteSliceToStrings(args[1 : 1+int(nk)])
 	agg = zAggSum
@@ -322,7 +339,7 @@ func zParseOpArgs(args [][]byte, allowWithScores bool) (keys []string, weights [
 			for j := 0; j < int(nk); j++ {
 				w, perr := toFloat(args[i+1+j])
 				if perr != nil {
-					return nil, nil, 0, false, ErrNotFloat
+					return nil, nil, 0, false, &protoError{"ERR weight is not a float"}
 				}
 				weights = append(weights, w)
 			}
@@ -356,7 +373,7 @@ func zParseOpArgs(args [][]byte, allowWithScores bool) (keys []string, weights [
 }
 
 func cmdZUnion(c *Ctx, args [][]byte) error {
-	keys, weights, agg, withScores, err := zParseOpArgs(args, true)
+	keys, weights, agg, withScores, err := zParseOpArgs(args, true, "ZUNION")
 	if err != nil {
 		return err
 	}
@@ -369,7 +386,7 @@ func cmdZUnion(c *Ctx, args [][]byte) error {
 }
 
 func cmdZInter(c *Ctx, args [][]byte) error {
-	keys, weights, agg, withScores, err := zParseOpArgs(args, true)
+	keys, weights, agg, withScores, err := zParseOpArgs(args, true, "ZINTERSTORE/ZINTER")
 	if err != nil {
 		return err
 	}
@@ -410,7 +427,7 @@ func zStoreOp(c *Ctx, args [][]byte, op int) error {
 		return WrongArgs("zunionstore")
 	}
 	dst := string(args[0])
-	keys, weights, aggMode, _, err := zParseOpArgs(args[1:], false)
+	keys, weights, aggMode, _, err := zParseOpArgs(args[1:], false, "ZUNIONSTORE/ZINTERSTORE")
 	if err != nil {
 		return err
 	}
@@ -636,15 +653,12 @@ func bzPopCmd(c *Ctx, args [][]byte, max bool) error {
 	if len(args) < 2 {
 		return WrongArgs("bzpopmin")
 	}
-	secs, err := toInt64(args[len(args)-1])
+	secs, err := parseBlockTimeout(args[len(args)-1])
 	if err != nil {
 		return err
 	}
-	if secs < 0 {
-		return &protoError{"ERR timeout is negative"}
-	}
 	keys := byteSliceToStrings(args[:len(args)-1])
-	timeout := time.Duration(secs) * time.Second
+	timeout := time.Duration(secs * float64(time.Second))
 	deadline := time.Time{}
 	if secs > 0 {
 		deadline = time.Now().Add(timeout)
@@ -665,13 +679,13 @@ func bzPopCmd(c *Ctx, args [][]byte, max bool) error {
 		if secs > 0 {
 			remaining := time.Until(deadline)
 			if remaining <= 0 {
-				c.writeNull()
+				c.writeNullArray()
 				return nil
 			}
 			timeout = remaining
 		}
 		if !c.blockSleep(bvkeysVersion1, timeout) {
-			c.writeNull()
+			c.writeNullArray()
 			return nil
 		}
 		bvkeysVersion1 = c.Store.blockVersion()
@@ -734,13 +748,13 @@ func cmdBZMPop(c *Ctx, args [][]byte) error {
 		if secs > 0 {
 			remaining := time.Until(deadline)
 			if remaining <= 0 {
-				c.writeNull()
+				c.writeNullArray()
 				return nil
 			}
 			timeout = remaining
 		}
 		if !c.blockSleep(bvkeysVersion2, timeout) {
-			c.writeNull()
+			c.writeNullArray()
 			return nil
 		}
 		bvkeysVersion2 = c.Store.blockVersion()

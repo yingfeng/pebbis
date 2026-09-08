@@ -1,6 +1,7 @@
 package redistore
 
 import (
+	"bytes"
 	"sort"
 	"strconv"
 	"strings"
@@ -354,6 +355,13 @@ func cmdType(c *Ctx, args [][]byte) error {
 		return err
 	}
 	if !ok {
+		// Streams are stored outside the dict; check Pebble directly.
+		if sok, serr := c.Store.streamExists(c.DB, string(args[0])); serr != nil {
+			return serr
+		} else if sok {
+			c.w.WriteString("stream")
+			return nil
+		}
 		c.w.WriteString("none")
 		return nil
 	}
@@ -539,7 +547,31 @@ func cmdDBSize(c *Ctx, args [][]byte) error {
 	if err := c.checkArgLen(len(args), 0); err != nil {
 		return err
 	}
-	c.writeInt(int64(c.Store.dict.Len(c.DB)))
+	// Streams live only in Pebble (no dict entry), so they are counted
+	// separately and de-duplicated against the dict.
+	n := int64(c.Store.dict.Len(c.DB))
+	inDict := func(k string) bool {
+		_, ok := c.Store.dict.Lookup(c.DB, k)
+		return ok
+	}
+	prefix := streamEntryPrefix(c.DB, "")
+	var last string
+	_ = c.Store.eng.ScanKeys(prefix[:3], func(k []byte) error {
+		// Entry keys are [seg][db][name]0x00[id]; the name ends at 0x00.
+		name := k[3:]
+		if i := bytes.IndexByte(name, 0x00); i >= 0 {
+			name = name[:i]
+		}
+		if len(name) == 0 || string(name) == last {
+			return nil
+		}
+		last = string(name)
+		if !inDict(last) {
+			n++
+		}
+		return nil
+	})
+	c.writeInt(n)
 	return nil
 }
 
@@ -714,6 +746,7 @@ func cmdScan(c *Ctx, args [][]byte) error {
 		startKey = c.Store.scanCursors.lookup(id, c.DB)
 	}
 	var matchFn func(string) bool
+	typeFilter := ""
 	count := 10
 	for i := 1; i < len(args); i += 2 {
 		switch strings.ToUpper(string(args[i])) {
@@ -725,12 +758,17 @@ func cmdScan(c *Ctx, args [][]byte) error {
 			matchFn = g.Match
 		case "COUNT":
 			cnt, perr := strconv.Atoi(string(args[i+1]))
-			if perr != nil || cnt <= 0 {
+			if perr != nil {
+				return ErrNotInteger
+			}
+			if cnt <= 0 {
 				return ErrSyntax
 			}
 			count = cnt
 		case "TYPE":
-			// TYPE filtering needs the aggregate types, which land in P1.
+			// The type must be given exactly (no pattern matching); an
+			// unknown type simply filters everything out.
+			typeFilter = strings.ToLower(string(args[i+1]))
 		default:
 			return ErrSyntax
 		}
@@ -754,6 +792,15 @@ func cmdScan(c *Ctx, args [][]byte) error {
 		lastKey = append([]byte(nil), k...)
 		if !c.Store.keyAlive(c.DB, key, now) {
 			return nil
+		}
+		if typeFilter != "" {
+			typ, exists, terr := c.Store.typeOf(c.DB, key)
+			if terr != nil {
+				return terr
+			}
+			if !exists || config.TypeName(typ) != typeFilter {
+				return nil
+			}
 		}
 		if matchFn(key) {
 			batch = append(batch, key)

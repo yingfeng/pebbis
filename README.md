@@ -36,15 +36,15 @@ go build -o bin/redistored ./cmd/redistored
 
 Configuration (see `config/`): `maxmemory`, `maxmemory-policy`, `slowlog-log-slower-than`, `slowlog-max-len`, `lfu-decay-time`.
 
-## Supported commands (~165)
+## Supported commands (188)
 
-- **Connection / server**: `PING`, `ECHO`, `SELECT`, `QUIT`, `HELLO`, `AUTH`, `COMMAND`, `CLIENT` (GET/GETNAME/ID/INFO/LIST/RESET/SETNAME), `CONFIG` (subset), `INFO`, `TIME`, `DBSIZE`, `FLUSHDB`, `FLUSHALL`, `SAVE`, `BGSAVE`, `LASTSAVE`, `SHUTDOWN`, `SLOWLOG`, `MEMORY`, `OBJECT` (subset)
-- **Strings**: `GET`, `SET`, `SETNX`, `SETXX`, `SETEX`, `PSETEX`, `GETSET`, `GETDEL`, `MSET`, `MSETNX`, `MGET`, `APPEND`, `STRLEN`, `INCR`, `DECR`, `INCRBY`, `DECRBY`, `INCRBYFLOAT`, `GETRANGE`, `SETRANGE`, `SUBSTR`, `LCS`
-- **Keys (generic)**: `DEL`, `UNLINK`, `EXISTS`, `TYPE`, `TTL`, `PTTL`, `EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `PERSIST`, `EXPIRETIME`, `PEXPIRETIME`, `KEYS`, `SCAN`, `RANDOMKEY`, `RENAME`, `RENAMENX`, `COPY`, `MOVE`, `TOUCH`
-- **Hashes**: `HSET`, `HMSET`, `HSETNX`, `HGET`, `HMGET`, `HGETALL`, `HDEL`, `HEXISTS`, `HKEYS`, `HVALS`, `HLEN`, `HSTRLEN`, `HINCRBY`, `HRANDFIELD`
-- **Lists**: `LPUSH`, `LPUSHX`, `RPUSH`, `RPUSHX`, `LPOP`, `RPOP`, `LRANGE`, `LINDEX`, `LLEN`, `LREM`, `LSET`, `LTRIM`, `LMOVE`, `LPOS`, `LMPOP`, `RPOPLPUSH`, `BLPOP`, `BRPOP`, `BRPOPLPUSH`, `BLMOVE`, `BLMPOP`
-- **Sets**: `SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SMISMEMBER`, `SCARD`, `SMOVE`, `SPOP`, `SRANDMEMBER`, `SINTER`, `SINTERSTORE`, `SINTERCARD`, `SUNION`, `SUNIONSTORE`, `SDIFF`, `SDIFFSTORE`
-- **Sorted sets**: `ZADD`, `ZCARD`, `ZCOUNT`, `ZINCRBY`, `ZSCORE`, `ZMSCORE`, `ZRANK`, `ZREVRANK`, `ZRANGE` (incl. `REV`/`BYSCORE`/`BYLEX`), `ZRANGEBYSCORE`, `ZRANGEBYLEX`, `ZREVRANGEBYLEX`, `ZRANGESTORE`, `ZLEXCOUNT`, `ZREM`, `ZREMRANGEBYRANK`, `ZREMRANGEBYSCORE`, `ZREMRANGEBYLEX`, `ZPOPMIN`, `ZPOPMAX`, `ZMPOP`, `BZPOPMIN`, `BZPOPMAX`, `BZMPOP`, `ZRANDMEMBER`, `ZUNION`, `ZUNIONSTORE`, `ZINTER`, `ZINTERSTORE`, `ZDIFF`, `ZDIFFSTORE`
+- **Connection / server**: `PING`, `ECHO`, `SELECT`, `QUIT`, `HELLO`, `AUTH`, `COMMAND`, `CLIENT` (GET/GETNAME/ID/INFO/LIST/RESET/SETNAME), `CONFIG` (subset), `INFO`, `DEBUG`, `TIME`, `SORT`, `SORT_RO`, `DBSIZE`, `FLUSHDB`, `FLUSHALL`, `SAVE`, `BGSAVE`, `LASTSAVE`, `SHUTDOWN`, `SLOWLOG`, `MEMORY`, `OBJECT` (subset)
+- **Strings**: `GET`, `SET`, `SETNX`, `SETXX`, `SETEX`, `PSETEX`, `GETSET`, `GETDEL`, `GETEX`, `DELEX`, `MSET`, `MSETNX`, `MGET`, `APPEND`, `STRLEN`, `INCR`, `DECR`, `INCRBY`, `DECRBY`, `INCRBYFLOAT`, `GETRANGE`, `SETRANGE`, `SUBSTR`, `LCS`, `SETBIT`, `GETBIT`, `BITCOUNT`, `BITPOS`, `BITOP`
+- **Keys (generic)**: `DEL`, `UNLINK`, `EXISTS`, `TYPE`, `TTL`, `PTTL`, `EXPIRE`, `PEXPIRE`, `EXPIREAT`, `PEXPIREAT`, `PERSIST`, `EXPIRETIME`, `PEXPIRETIME`, `KEYS`, `SCAN`, `RANDOMKEY`, `RENAME`, `RENAMENX`, `COPY`, `MOVE`, `SWAPDB`, `TOUCH`
+- **Hashes**: `HSET`, `HMSET`, `HSETNX`, `HGET`, `HMGET`, `HGETALL`, `HDEL`, `HEXISTS`, `HKEYS`, `HVALS`, `HLEN`, `HSTRLEN`, `HINCRBY`, `HINCRBYFLOAT`, `HSCAN`, `HRANDFIELD`
+- **Lists**: `LPUSH`, `LPUSHX`, `RPUSH`, `RPUSHX`, `LPOP`, `RPOP`, `LRANGE`, `LINDEX`, `LLEN`, `LREM`, `LSET`, `LTRIM`, `LINSERT`, `LMOVE`, `LPOS`, `LMPOP`, `RPOPLPUSH`, `BLPOP`, `BRPOP`, `BRPOPLPUSH`, `BLMOVE`, `BLMPOP`
+- **Sets**: `SADD`, `SREM`, `SMEMBERS`, `SISMEMBER`, `SMISMEMBER`, `SCARD`, `SMOVE`, `SPOP`, `SRANDMEMBER`, `SINTER`, `SINTERSTORE`, `SINTERCARD`, `SUNION`, `SUNIONSTORE`, `SDIFF`, `SDIFFSTORE`, `SSCAN`
+- **Sorted sets**: `ZADD`, `ZCARD`, `ZCOUNT`, `ZINCRBY`, `ZSCORE`, `ZMSCORE`, `ZRANK`, `ZREVRANK`, `ZREVRANGE`, `ZRANGE` (incl. `REV`/`BYSCORE`/`BYLEX`), `ZRANGEBYSCORE`, `ZREVRANGEBYSCORE`, `ZRANGEBYLEX`, `ZREVRANGEBYLEX`, `ZRANGESTORE`, `ZLEXCOUNT`, `ZREM`, `ZREMRANGEBYRANK`, `ZREMRANGEBYSCORE`, `ZREMRANGEBYLEX`, `ZPOPMIN`, `ZPOPMAX`, `ZMPOP`, `BZPOPMIN`, `BZPOPMAX`, `BZMPOP`, `ZRANDMEMBER`, `ZUNION`, `ZUNIONSTORE`, `ZINTER`, `ZINTERSTORE`, `ZDIFF`, `ZDIFFSTORE`
 - **Streams**: `XADD`, `XLEN`, `XRANGE`, `XREVRANGE`, `XREAD`, `XDEL`, `XTRIM`, `XGROUP` (CREATE/DESTROY/CREATECONSUMER/DELCONSUMER), `XREADGROUP`, `XACK`, `XPENDING`, `XCLAIM`, `XINFO` (GROUPS/CONSUMERS/STREAM)
 - **Pub/Sub**: `SUBSCRIBE`, `UNSUBSCRIBE`, `PSUBSCRIBE`, `PUNSUBSCRIBE`, `PUBLISH`, `PUBSUB`
 - **Transactions**: `MULTI`, `EXEC`, `DISCARD`, `WATCH`, `UNWATCH`
@@ -55,12 +55,12 @@ This is a cache/store, not a full Redis clone. Compared with Redis 7.x, the foll
 
 - **Clustering & replication**: `CLUSTER *`, `REPLICAOF`, `SLAVEOF`, `SYNC`, `PSYNC`, `WAIT`, `WAITAOF`, `FAILOVER`, `READONLY`, `READWRITE`
 - **ACL**: the entire `ACL *` family (authentication via `AUTH <password>` works with a configured default password)
-- **Bitmaps**: `SETBIT`, `GETBIT`, `BITCOUNT`, `BITPOS`, `BITFIELD`, `BITFIELD_RO`, `BITOP`
+- **Bitmaps**: `BITFIELD`, `BITFIELD_RO` (the `SETBIT` / `GETBIT` / `BITCOUNT` / `BITPOS` / `BITOP` primitives are supported)
 - **HyperLogLog**: `PFADD`, `PFCOUNT`, `PFMERGE`
 - **Geospatial**: `GEOADD` and the whole `GEO*` family
 - **Scripting / functions**: `EVAL`, `EVALSHA`, `EVAL_RO`, `EVALSHA_RO`, `FCALL`, `FCALL_RO`, `SCRIPT *`, `FUNCTION *`
-- **Server internals**: `DEBUG`, `MONITOR`, `LATENCY *`, `LOLWUT`, `SWAPDB`, `COMMAND DOCS/INFO` (only the full `COMMAND` dump is served)
-- **Data-command gaps**: `SORT`, `SORT_RO`, `GETEX`, `ZREVRANGE` (use `ZRANGE ... REV`), `DUMP`, `RESTORE`, `MIGRATE`
+- **Server internals**: `MONITOR`, `LATENCY *`, `LOLWUT`, `COMMAND DOCS/INFO` (only the full `COMMAND` dump is served)
+- **Data-command gaps**: `DUMP`, `RESTORE`, `MIGRATE`
 - **Hash field TTL (Redis 7.4)**: `HGETEX`, `HGETDEL`, `HEXPIRE`, `HPEXPIRE`, `HEXPIREAT`, `HPEXPIREAT`, `HTTL`, `HPTTL`, `HPERSIST`, `HFIELDS`
 - **Streams**: `XAUTOCLAIM`, `XSETID`
 - **Keyspace notifications**: expired-key / keyevent channels are not published

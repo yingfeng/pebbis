@@ -1,6 +1,8 @@
 package redistore
 
 import (
+	"strings"
+
 	"github.com/redistore/redistore/config"
 	"github.com/redistore/redistore/storage"
 )
@@ -374,7 +376,13 @@ func popCmd(c *Ctx, args [][]byte, left bool) error {
 		}
 		return nil
 	}
-	// With COUNT, Redis always returns an array (even for count 1).
+	// With COUNT, Redis always returns an array (even for count 1) — but a
+	// pop with a positive count from a missing/empty key yields a null array,
+	// not an empty one (count 0 still returns an empty array).
+	if hasCount && n > 0 && len(out) == 0 {
+		c.writeNullArray()
+		return nil
+	}
 	if !left {
 		// RPOP returns the popped elements in the order they were removed,
 		// i.e. tail-most first, which is the reverse of list order.
@@ -504,11 +512,30 @@ func cmdLTrim(c *Ctx, args [][]byte) error {
 
 // cmdRPopLPush pops from the tail of src and pushes to the head of dst,
 // returning the element moved.
+// checkListDest rejects a destination that exists and is not a list.
+//
+// Move-style commands (RPOPLPUSH, LMOVE, BRPOPLPUSH, BLMOVE) must call this
+// BEFORE popping from the source: popping first and discovering the bad
+// destination afterwards would silently drop the element.
+func (c *Ctx) checkListDest(dst string) error {
+	_, typ, _, ok, err := c.Store.getTyped(c.DB, dst)
+	if err != nil {
+		return err
+	}
+	if ok && typ != config.TypeList {
+		return ErrWrongType
+	}
+	return nil
+}
+
 func cmdRPopLPush(c *Ctx, args [][]byte) error {
 	if err := c.checkArgLen(len(args), 2); err != nil {
 		return err
 	}
 	src, dst := string(args[0]), string(args[1])
+	if err := c.checkListDest(dst); err != nil {
+		return err
+	}
 	out, err := c.Store.listPop(c.DB, src, 1, false)
 	if err != nil {
 		return err
@@ -539,4 +566,52 @@ func allShort(items []string, max int) bool {
 		}
 	}
 	return true
+}
+
+// ---------- list: LINSERT ----------
+
+func cmdLInsert(c *Ctx, args [][]byte) error {
+	if err := c.checkArgLen(len(args), 4); err != nil {
+		return err
+	}
+	var before bool
+	switch strings.ToUpper(string(args[1])) {
+	case "BEFORE":
+		before = true
+	case "AFTER":
+		before = false
+	default:
+		return ErrSyntax
+	}
+	key, pivot, val := string(args[0]), string(args[2]), string(args[3])
+	a, err := c.Store.loadAgg(c.DB, key, config.TypeList)
+	if err != nil {
+		return err
+	}
+	if !a.exists {
+		c.writeInt(0)
+		return nil
+	}
+	idx := -1
+	for i, e := range a.list {
+		if e == pivot {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		// Pivot not found: the list is left untouched.
+		c.writeInt(-1)
+		return nil
+	}
+	pos := idx
+	if !before {
+		pos = idx + 1
+	}
+	a.list = append(a.list[:pos], append([]string{val}, a.list[pos:]...)...)
+	if err := c.Store.saveAgg(c.DB, key, a); err != nil {
+		return err
+	}
+	c.writeInt(int64(len(a.list)))
+	return nil
 }

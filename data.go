@@ -103,6 +103,14 @@ func (s *Store) setString(db uint16, key string, val []byte, opt SetOption) (old
 	if err != nil {
 		return nil, false, false, err
 	}
+	if exists && opt.GET {
+		// SET ... GET / GETSET on a non-string key is a WRONGTYPE, like GET.
+		if typ, ok, terr := s.typeOf(db, key); terr != nil {
+			return nil, false, false, terr
+		} else if ok && typ != config.TypeString {
+			return nil, false, false, ErrWrongType
+		}
+	}
 	if exists {
 		old = prev
 	}
@@ -251,6 +259,12 @@ func (s *Store) exists(db uint16, keys []string) (int64, error) {
 		if _, _, _, ok, err := s.getTyped(db, k); err != nil {
 			return 0, err
 		} else if ok {
+			n++
+			continue
+		} else if ok2, err := s.streamExists(db, k); err != nil {
+			return 0, err
+		} else if ok2 {
+			// Streams live only in Pebble, outside the dict.
 			n++
 		}
 	}

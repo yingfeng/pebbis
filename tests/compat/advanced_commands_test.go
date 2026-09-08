@@ -32,7 +32,7 @@ func TestZSetLexRange(t *testing.T) {
 
 	assertInt(t, do(t, c, "ZREMRANGEBYLEX", "z", "(alpha", "(delta"), 1)
 	assertInt(t, do(t, c, "ZLEXCOUNT", "z", "-", "+"), 3)
-	assertErr(t, do(t, c, "ZRANGEBYLEX", "z", "alpha", "+"), errSyntax)
+	assertErr(t, do(t, c, "ZRANGEBYLEX", "z", "alpha", "+"), "not valid string range")
 }
 
 func TestZSetSetOperations(t *testing.T) {

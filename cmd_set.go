@@ -3,8 +3,11 @@ package redistore
 import (
 	"math/rand/v2"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/redistore/redistore/config"
+	"github.com/redistore/redistore/glob"
 	"github.com/redistore/redistore/storage"
 )
 
@@ -317,8 +320,13 @@ func cmdSPop(c *Ctx, args [][]byte) error {
 }
 
 func cmdSRandMember(c *Ctx, args [][]byte) error {
-	if len(args) < 1 || len(args) > 2 {
+	if len(args) < 1 {
 		return WrongArgs("srandmember")
+	}
+	if len(args) > 2 {
+		// Redis checks the option list after the count and reports a syntax
+		// error for trailing arguments.
+		return ErrSyntax
 	}
 	members, err := c.Store.setMembers(c.DB, string(args[0]))
 	if err != nil {
@@ -522,15 +530,18 @@ func cmdSInterStore(c *Ctx, args [][]byte) error { return setStoreOp(c, args, op
 func cmdSDiffStore(c *Ctx, args [][]byte) error  { return setStoreOp(c, args, opDiff) }
 
 func cmdSInterCard(c *Ctx, args [][]byte) error {
-	if len(args) < 1 {
+	if len(args) < 2 {
 		return WrongArgs("sintercard")
 	}
 	numkeys, err := toInt64(args[0])
 	if err != nil {
-		return err
+		return &protoError{"ERR numkeys should be greater than 0"}
 	}
-	if numkeys < 0 || int(numkeys) > len(args)-1 {
-		return &protoError{"ERR Number of keys is greater than the number of arguments"}
+	if numkeys <= 0 {
+		return &protoError{"ERR numkeys should be greater than 0"}
+	}
+	if int(numkeys) > len(args)-1 {
+		return &protoError{"ERR Number of keys can't be greater than number of args"}
 	}
 	keys := byteSliceToStrings(args[1 : 1+numkeys])
 	// Optional trailing LIMIT <n>; nothing else may follow the keys.
@@ -544,7 +555,7 @@ func cmdSInterCard(c *Ctx, args [][]byte) error {
 			return err
 		}
 		if v < 0 {
-			return ErrNotInteger
+			return &protoError{"ERR LIMIT can't be negative"}
 		}
 		limit = int(v) // 0 means "no limit", matching Redis
 	}
@@ -552,12 +563,18 @@ func cmdSInterCard(c *Ctx, args [][]byte) error {
 		c.writeInt(0)
 		return nil
 	}
-	var inter map[string]struct{}
-	for i, k := range keys {
+	// Load every key first: Redis type-checks all of them even when an
+	// earlier key is missing (SINTERCARD 2 nosuch str is a WRONGTYPE).
+	aggs := make([]*agg, 0, len(keys))
+	for _, k := range keys {
 		a, err := c.Store.loadAgg(c.DB, k, config.TypeSet)
 		if err != nil {
 			return err
 		}
+		aggs = append(aggs, a)
+	}
+	var inter map[string]struct{}
+	for i, a := range aggs {
 		if i == 0 {
 			inter = map[string]struct{}{}
 			for m := range a.set {
@@ -576,5 +593,73 @@ func cmdSInterCard(c *Ctx, args [][]byte) error {
 		n = limit
 	}
 	c.writeInt(int64(n))
+	return nil
+}
+
+// ---------- set: SSCAN ----------
+
+// cmdSScan implements SSCAN: like HSCAN, one call returns the full (sorted)
+// member iteration with cursor 0.
+func cmdSScan(c *Ctx, args [][]byte) error {
+	if err := c.checkArgLen(len(args), -2); err != nil {
+		return err
+	}
+	if _, err := strconv.ParseUint(string(args[1]), 10, 64); err != nil {
+		return &protoError{"ERR invalid cursor"}
+	}
+	var matchFn func(string) bool
+	rest := args[2:]
+	for len(rest) > 0 {
+		switch strings.ToUpper(string(rest[0])) {
+		case "MATCH":
+			if len(rest) < 2 {
+				return ErrSyntax
+			}
+			g, cerr := glob.Compile(string(rest[1]))
+			if cerr != nil {
+				return ErrSyntax
+			}
+			matchFn = g.Match
+			rest = rest[2:]
+		case "COUNT":
+			if len(rest) < 2 {
+				return ErrSyntax
+			}
+			cnt, perr := strconv.Atoi(string(rest[1]))
+			if perr != nil {
+				return ErrNotInteger
+			}
+			if cnt <= 0 {
+				return ErrSyntax
+			}
+			rest = rest[2:]
+		default:
+			return ErrSyntax
+		}
+	}
+	if matchFn == nil {
+		matchFn = func(string) bool { return true }
+	}
+	a, err := c.Store.loadAgg(c.DB, string(args[0]), config.TypeSet)
+	if err != nil {
+		return err
+	}
+	members := make([]string, 0, len(a.set))
+	for m := range a.set {
+		members = append(members, m)
+	}
+	sort.Strings(members)
+	out := make([]string, 0, len(members))
+	for _, m := range members {
+		if matchFn(m) {
+			out = append(out, m)
+		}
+	}
+	c.w.WriteArray(2)
+	c.w.WriteBulkString("0")
+	c.w.WriteArray(len(out))
+	for _, m := range out {
+		c.w.WriteBulkString(m)
+	}
 	return nil
 }

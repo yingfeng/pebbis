@@ -619,3 +619,57 @@ func (s *Store) xGroupConsumerCount(db uint16, key, group string) int {
 }
 
 var _ = time.Now
+
+// streamExists reports whether the key has any stream entries in Pebble.
+func (s *Store) streamExists(db uint16, key string) (bool, error) {
+	found := false
+	err := s.eng.Scan(streamEntryPrefix(db, key), func([]byte, []byte) error {
+		found = true
+		return storage.ErrStop
+	})
+	if err != nil && !storage.IsStop(err) {
+		return false, err
+	}
+	return found, nil
+}
+
+// copyStreamEntries copies every entry of a stream to another key (used by
+// COPY, which must work for streams like any other type). Reports false when
+// the source is not a stream.
+func (s *Store) copyStreamEntries(srcDB uint16, src string, dstDB uint16, dst string) (bool, error) {
+	prefix := streamEntryPrefix(srcDB, src)
+	found := false
+	batch := s.eng.Batch()
+	defer batch.Close()
+	err := s.eng.Scan(prefix, func(k, v []byte) error {
+		id, ok := streamIDOfEntryKey(prefix, k)
+		if !ok {
+			return nil
+		}
+		found = true
+		return batch.Set(appendStreamEntryKey(nil, dstDB, dst, id), append([]byte(nil), v...))
+	})
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		return false, nil
+	}
+	if err := s.eng.Apply(batch); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// deleteStreamEntries removes every entry of a stream (used by COPY REPLACE).
+func (s *Store) deleteStreamEntries(db uint16, key string) error {
+	prefix := streamEntryPrefix(db, key)
+	batch := s.eng.Batch()
+	defer batch.Close()
+	if err := s.eng.Scan(prefix, func(k, _ []byte) error {
+		return batch.Delete(append([]byte(nil), k...))
+	}); err != nil {
+		return err
+	}
+	return s.eng.Apply(batch)
+}

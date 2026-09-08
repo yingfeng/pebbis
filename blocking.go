@@ -1,6 +1,8 @@
 package redistore
 
 import (
+	"math"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -99,26 +101,38 @@ func (b *blocker) blockedLen() int {
 	return len(b.chans)
 }
 
+// parseBlockTimeout parses a BLPOP-family timeout the way Redis does: a
+// double-precision number of seconds. A negative timeout, +inf and unparseable
+// values each get their own error, matching Redis 8's messages.
+func parseBlockTimeout(b []byte) (float64, error) {
+	secs, err := strconv.ParseFloat(string(b), 64)
+	if err != nil || math.IsNaN(secs) || math.IsInf(secs, -1) {
+		return 0, &protoError{"ERR timeout is not a float or out of range"}
+	}
+	if math.IsInf(secs, 1) {
+		return 0, &protoError{"ERR timeout is out of range"}
+	}
+	if secs < 0 {
+		return 0, &protoError{"ERR timeout is negative"}
+	}
+	return secs, nil
+}
+
 // blockedPop is the shared body of BLPOP and BRPOP.
 func blockedPop(c *Ctx, args [][]byte, left bool) error {
 	if len(args) < 2 {
 		return WrongArgs("blpop")
 	}
-	// Redis parses the timeout as an integer number of seconds; a fractional
-	// value is rejected rather than rounded.
-	secs, err := toInt64(args[len(args)-1])
+	secs, err := parseBlockTimeout(args[len(args)-1])
 	if err != nil {
 		return err
-	}
-	if secs < 0 {
-		return &protoError{"ERR timeout is negative"}
 	}
 	keys := make([]string, 0, len(args)-1)
 	for _, a := range args[:len(args)-1] {
 		keys = append(keys, string(a))
 	}
 
-	timeout := time.Duration(secs) * time.Second
+	timeout := time.Duration(secs * float64(time.Second))
 	deadline := time.Time{}
 	if secs > 0 {
 		deadline = time.Now().Add(timeout)
@@ -145,13 +159,13 @@ func blockedPop(c *Ctx, args [][]byte, left bool) error {
 		if secs > 0 {
 			remaining := time.Until(deadline)
 			if remaining <= 0 {
-				c.writeNull()
+				c.writeNullArray()
 				return nil
 			}
 			timeout = remaining
 		}
 		if !c.blockSleep(v, timeout) {
-			c.writeNull()
+			c.writeNullArray()
 			return nil
 		}
 		v = c.Store.blockVersion()
@@ -182,16 +196,18 @@ func cmdBRPopLPush(c *Ctx, args [][]byte) error {
 	if err := c.checkArgLen(len(args), 3); err != nil {
 		return err
 	}
-	secs, err := toInt64(args[2])
+	secs, err := parseBlockTimeout(args[2])
 	if err != nil {
 		return err
 	}
-	if secs < 0 {
-		return &protoError{"ERR timeout is negative"}
-	}
 	src, dst := string(args[0]), string(args[1])
+	// Reject a bad destination before touching the source, so a failed move
+	// cannot drop the element.
+	if err := c.checkListDest(dst); err != nil {
+		return err
+	}
 
-	timeout := time.Duration(secs) * time.Second
+	timeout := time.Duration(secs * float64(time.Second))
 	deadline := time.Time{}
 	if secs > 0 {
 		deadline = time.Now().Add(timeout)
@@ -213,13 +229,13 @@ func cmdBRPopLPush(c *Ctx, args [][]byte) error {
 		if secs > 0 {
 			remaining := time.Until(deadline)
 			if remaining <= 0 {
-				c.writeNull()
+				c.writeNullArray()
 				return nil
 			}
 			timeout = remaining
 		}
 		if !c.blockSleep(v, timeout) {
-			c.writeNull()
+			c.writeNullArray()
 			return nil
 		}
 		v = c.Store.blockVersion()

@@ -145,9 +145,17 @@ func cmdClient(c *Ctx, args [][]byte) error {
 		if len(args) != 2 {
 			return WrongArgs("client")
 		}
-		cs.Name = string(args[1])
+		name := string(args[1])
+		// Redis rejects names with spaces, newlines or other control chars.
+		if strings.ContainsAny(name, " \n\r\t") {
+			return &protoError{"ERR Client names cannot contain spaces, newlines or special characters."}
+		}
+		cs.Name = name
 		c.writeOK()
 	case "GETNAME":
+		if len(args) != 1 {
+			return WrongArgs("client")
+		}
 		if cs.Name == "" {
 			c.writeNull()
 		} else {
@@ -172,7 +180,7 @@ func cmdClient(c *Ctx, args [][]byte) error {
 		}
 		return &protoError{"ERR Unrecognized option specified by CLIENT SETINFO"}
 	default:
-		return ErrSyntax
+		return &protoError{"ERR unknown subcommand '" + strings.ToLower(string(args[0])) + "'. Try CLIENT HELP."}
 	}
 	return nil
 }
@@ -193,8 +201,11 @@ func clientInfo(c *Ctx, cs *connState) string {
 
 // cmdObject reports encoding and eviction metadata for a key.
 func cmdObject(c *Ctx, args [][]byte) error {
-	if len(args) < 2 {
+	if len(args) < 1 {
 		return WrongArgs("object")
+	}
+	if len(args) != 2 {
+		return WrongArgs("object|idletime")
 	}
 	key := string(args[1])
 	switch strings.ToUpper(string(args[0])) {
@@ -225,9 +236,8 @@ func cmdObject(c *Ctx, args [][]byte) error {
 		c.writeInt(int64(e.Freq()))
 		return nil
 	case "IDLETIME":
-		if !c.Store.cfg.TracksLRU() {
-			return &protoError{"ERR An LRU maxmemory policy is not selected, access time not tracked. Please note that when switching between policies at runtime LRU and LFU data will take some time to adjust."}
-		}
+		// Real Redis tracks access time regardless of the active policy, so
+		// no policy guard here; an untracked key simply reads as just-touched.
 		e, ok := c.Store.dict.Lookup(c.DB, key)
 		if !ok {
 			c.writeNull()
@@ -239,7 +249,7 @@ func cmdObject(c *Ctx, args [][]byte) error {
 		c.writeInt(1)
 		return nil
 	default:
-		return ErrSyntax
+		return &protoError{"ERR unknown subcommand '" + strings.ToLower(string(args[0])) + "'. Try OBJECT HELP."}
 	}
 }
 

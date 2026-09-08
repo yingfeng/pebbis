@@ -3,7 +3,9 @@ package redistore
 import (
 	"crypto/tls"
 	"errors"
+	"log"
 	"net"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
@@ -298,8 +300,15 @@ func (srv *Server) handle(conn redcon.Conn, cmd redcon.Command) {
 
 	// Inside MULTI, only the transaction control commands run; everything else
 	// is queued and answered with +QUEUED. WATCH is deliberately excluded: it
-	// must fail loudly instead of being queued.
+	// must fail loudly instead of being queued. Unknown commands and arity
+	// errors are rejected at queue time and mark the transaction dirty, so
+	// EXEC reports EXECABORT (Redis semantics).
 	if st.inTxn && upper != "MULTI" && upper != "EXEC" && upper != "DISCARD" && upper != "QUIT" && upper != "WATCH" {
+		if err := validateQueued(upper, len(args)+1); err != nil {
+			st.dirtyTxn = true
+			conn.WriteError(err.Error())
+			return
+		}
 		st.queue = append(st.queue, flattenArgs(name, args))
 		conn.WriteString("QUEUED")
 		return
@@ -334,7 +343,7 @@ func (srv *Server) handle(conn redcon.Conn, cmd redcon.Command) {
 	}
 
 	start := time.Now()
-	err := cm.fn(c, args)
+	err := runCommand(c, cm, args)
 	srv.store.slowLog.record(time.Since(start), full)
 	if err != nil {
 		if IsQuit(err) {
@@ -346,6 +355,20 @@ func (srv *Server) handle(conn redcon.Conn, cmd redcon.Command) {
 	}
 	// SELECT mutates the context; persist it for subsequent commands.
 	st.db = c.DB
+}
+
+// runCommand executes a command handler behind a recover. Redis' contract is
+// that a bad command produces an error, never a dead server: without this a
+// single malformed call (an arity edge case, say) would take every connection
+// down with it.
+func runCommand(c *Ctx, cm command, args [][]byte) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("panic handling %s: %v\n%s", c.Name, r, debug.Stack())
+			err = &protoError{"ERR internal error"}
+		}
+	}()
+	return cm.fn(c, args)
 }
 
 // flattenArgs joins the command name and its arguments into one slice for the

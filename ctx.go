@@ -87,7 +87,12 @@ func (c *Ctx) writeBulk(b []byte) {
 	}
 	c.w.WriteBulk(b)
 }
-func (c *Ctx) writeNull()         { c.w.WriteNull() }
+func (c *Ctx) writeNull() { c.w.WriteNull() }
+
+// writeNullArray writes a RESP null array. This is how Redis reports a
+// blocking command that gave up (BLPOP, BRPOPLPUSH, BLMPOP, …): a plain null
+// bulk would make clients fail to parse the reply.
+func (c *Ctx) writeNullArray() { c.w.WriteArray(-1) }
 func (c *Ctx) writeErr(err error) { c.w.WriteError(err.Error()) }
 
 // checkArgLen validates the argument count against arity.

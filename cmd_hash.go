@@ -4,8 +4,10 @@ import (
 	"math/rand/v2"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/redistore/redistore/config"
+	"github.com/redistore/redistore/glob"
 	"github.com/redistore/redistore/storage"
 )
 
@@ -360,9 +362,13 @@ func cmdHRandField(c *Ctx, args [][]byte) error {
 		count = int(n)
 		hasCount = true
 	}
-	for _, a := range args[2:] {
-		if eqFold(a, "WITHVALUES") {
-			withValues = true
+	// WithValues only appears after a count, so there is nothing to scan for
+	// single-argument HRANDFIELD — and args[2:] would panic on a 1-arg call.
+	if len(args) > 2 {
+		for _, a := range args[2:] {
+			if eqFold(a, "WITHVALUES") {
+				withValues = true
+			}
 		}
 	}
 	a, err := c.Store.loadAgg(c.DB, string(args[0]), config.TypeHash)
@@ -371,7 +377,9 @@ func cmdHRandField(c *Ctx, args [][]byte) error {
 	}
 	fields := sortedKeys(a.hash)
 	if len(fields) == 0 {
-		if count == 1 && !withValues {
+		// Redis: the no-count form replies with a single null bulk; any form
+		// that passed a COUNT replies with an empty array.
+		if !hasCount {
 			c.writeNull()
 		} else {
 			c.w.WriteArray(0)
@@ -457,3 +465,107 @@ func eqFold(b []byte, s string) bool {
 }
 
 var _ = sort.Strings
+
+// ---------- hash: HSCAN / HINCRBYFLOAT ----------
+
+// cmdHScan implements HSCAN. The aggregate is fully materialised in memory, so
+// like miniredis a single call returns every matching field and terminates the
+// iteration with cursor 0 (real Redis paginates by dict bucket, but the
+// element set — all real Redis guarantees — is identical).
+func cmdHScan(c *Ctx, args [][]byte) error {
+	if err := c.checkArgLen(len(args), -2); err != nil {
+		return err
+	}
+	if _, err := strconv.ParseUint(string(args[1]), 10, 64); err != nil {
+		return &protoError{"ERR invalid cursor"}
+	}
+	var matchFn func(string) bool
+	noValues := false
+	rest := args[2:]
+	for len(rest) > 0 {
+		switch strings.ToUpper(string(rest[0])) {
+		case "MATCH":
+			if len(rest) < 2 {
+				return ErrSyntax
+			}
+			g, cerr := glob.Compile(string(rest[1]))
+			if cerr != nil {
+				return ErrSyntax
+			}
+			matchFn = g.Match
+			rest = rest[2:]
+		case "COUNT":
+			if len(rest) < 2 {
+				return ErrSyntax
+			}
+			cnt, perr := strconv.Atoi(string(rest[1]))
+			if perr != nil {
+				return ErrNotInteger
+			}
+			if cnt <= 0 {
+				return ErrSyntax
+			}
+			rest = rest[2:]
+		case "NOVALUES":
+			noValues = true
+			rest = rest[1:]
+		default:
+			return ErrSyntax
+		}
+	}
+	if matchFn == nil {
+		matchFn = func(string) bool { return true }
+	}
+	a, err := c.Store.loadAgg(c.DB, string(args[0]), config.TypeHash)
+	if err != nil {
+		return err
+	}
+	flat := []string{}
+	for _, f := range sortedKeys(a.hash) {
+		if !matchFn(f) {
+			continue
+		}
+		flat = append(flat, f)
+		if !noValues {
+			flat = append(flat, string(a.hash[f]))
+		}
+	}
+	c.w.WriteArray(2)
+	c.w.WriteBulkString("0")
+	c.w.WriteArray(len(flat))
+	for _, s := range flat {
+		c.w.WriteBulkString(s)
+	}
+	return nil
+}
+
+func cmdHIncrByFloat(c *Ctx, args [][]byte) error {
+	if err := c.checkArgLen(len(args), 3); err != nil {
+		return err
+	}
+	inc, err := bigParseFloat(string(args[2]))
+	if err != nil {
+		return ErrNotFloat
+	}
+	a, err := c.Store.loadAgg(c.DB, string(args[0]), config.TypeHash)
+	if err != nil {
+		return err
+	}
+	curF := newBigPrec()
+	if v, ok := a.hash[string(args[1])]; ok {
+		if curF, err = bigParseFloat(string(v)); err != nil {
+			return ErrNotFloat
+		}
+	}
+	next := newBigPrec().Add(curF, inc)
+	if next.IsInf() {
+		return &protoError{"ERR increment would produce NaN or Infinity"}
+	}
+	field := string(args[1])
+	if _, err := c.Store.hashSet(c.DB, string(args[0]),
+		[][2][]byte{{[]byte(field), []byte(formatPrecFloat(next))}}, false); err != nil {
+		return err
+	}
+	c.w.WriteBulkString(formatPrecFloat(next))
+	return nil
+}

@@ -137,6 +137,24 @@ func cmdUnwatch(c *Ctx, args [][]byte) error {
 	return nil
 }
 
+// validateQueued checks a command before it is queued inside MULTI: Redis
+// rejects unknown commands and arity violations at queue time and marks the
+// transaction dirty, so that EXEC reports EXECABORT.
+func validateQueued(name string, argc int) error {
+	cmd, ok := commands[name]
+	if !ok {
+		return UnknownCommand(name)
+	}
+	if cmd.arity >= 0 {
+		if argc != cmd.arity {
+			return WrongArgs(name)
+		}
+	} else if argc < -cmd.arity {
+		return WrongArgs(name)
+	}
+	return nil
+}
+
 func abortTxn(cs *connState) {
 	cs.inTxn = false
 	cs.queue = nil
@@ -208,6 +226,7 @@ func cmdExec(c *Ctx, args [][]byte) error {
 	cs.dirtyTxn = false
 
 	c.w.WriteArray(len(queue))
+	curDB := c.DB
 	for _, line := range queue {
 		if len(line) == 0 {
 			continue
@@ -229,7 +248,7 @@ func cmdExec(c *Ctx, args [][]byte) error {
 		}
 		sub := &Ctx{
 			Store:      c.Store,
-			DB:         c.DB,
+			DB:         curDB,
 			Name:       upper,
 			MaxBulkLen: c.MaxBulkLen,
 			Args:       line,
@@ -241,7 +260,16 @@ func cmdExec(c *Ctx, args [][]byte) error {
 		if err := cm.fn(sub, byteArgs); err != nil {
 			c.w.WriteError(err.Error())
 		}
+		// A SELECT queued in the transaction switches the database for the
+		// commands after it (and for the connection afterwards), as in Redis.
+		if upper == "SELECT" {
+			curDB = sub.DB
+		}
 	}
+	// The connection keeps whatever database the transaction ended on; the
+	// dispatch loop mirrors c.DB back into the connection state.
+	c.DB = curDB
+	cs.db = curDB
 	return nil
 }
 

@@ -243,6 +243,6 @@ func TestZAddInvalidScore(t *testing.T) {
 	assertErr(t, do(t, c, "ZADD", "z", "one", "m"), "not a valid float")
 	assertErr(t, do(t, c, "ZADD", "z", "3.3.3", "m"), "not a valid float")
 	assertErr(t, do(t, c, "ZADD", "z", "1", "m", "2"), "syntax error")
-	assertErr(t, do(t, c, "ZADD", "z", "GT", "NX", "1", "m"), "syntax error")
-	assertErr(t, do(t, c, "ZADD", "z", "NX", "XX", "1", "m"), "syntax error")
+	assertErr(t, do(t, c, "ZADD", "z", "GT", "NX", "1", "m"), "not compatible")
+	assertErr(t, do(t, c, "ZADD", "z", "NX", "XX", "1", "m"), "not compatible")
 }

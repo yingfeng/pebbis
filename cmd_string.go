@@ -2,6 +2,7 @@ package redistore
 
 import (
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redistore/redistore/config"
@@ -480,4 +481,143 @@ func btoi(b bool) int64 {
 		return 1
 	}
 	return 0
+}
+
+// ---------- string: GETEX / DELEX ----------
+
+// cmdGetEx returns a string value and optionally adjusts its TTL.
+func cmdGetEx(c *Ctx, args [][]byte) error {
+	if err := c.checkArgLen(len(args), -1); err != nil {
+		return err
+	}
+	var (
+		ex, px, exat, pxat int64
+		persist            bool
+		kinds              int
+	)
+	for i := 1; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case foldEqual(arg, "EX"):
+			v, err := nextInt(args, &i, "EX")
+			if err != nil {
+				return err
+			}
+			if v <= 0 {
+				return ErrInvalidExpire
+			}
+			ex, kinds = v, kinds+1
+		case foldEqual(arg, "PX"):
+			v, err := nextInt(args, &i, "PX")
+			if err != nil {
+				return err
+			}
+			if v <= 0 {
+				return ErrInvalidExpire
+			}
+			px, kinds = v, kinds+1
+		case foldEqual(arg, "EXAT"):
+			v, err := nextInt(args, &i, "EXAT")
+			if err != nil {
+				return err
+			}
+			if v <= 0 {
+				return ErrInvalidExpire
+			}
+			exat, kinds = v, kinds+1
+		case foldEqual(arg, "PXAT"):
+			v, err := nextInt(args, &i, "PXAT")
+			if err != nil {
+				return err
+			}
+			if v <= 0 {
+				return ErrInvalidExpire
+			}
+			pxat, kinds = v, kinds+1
+		case foldEqual(arg, "PERSIST"):
+			persist, kinds = true, kinds+1
+		default:
+			return ErrSyntax
+		}
+	}
+	if kinds > 1 {
+		return ErrSyntax
+	}
+	cur, typ, _, ok, err := c.Store.getTyped(c.DB, string(args[0]))
+	if err != nil {
+		return err
+	}
+	if !ok {
+		c.writeNull()
+		return nil
+	}
+	if typ != config.TypeString {
+		return ErrWrongType
+	}
+	newExpire := int64(0)
+	now := c.Store.clock.NowMilli()
+	switch {
+	case persist:
+		newExpire = 0
+	case ex > 0:
+		newExpire = now + ex*1000
+	case px > 0:
+		newExpire = now + px
+	case exat > 0:
+		newExpire = exat * 1000
+	case pxat > 0:
+		newExpire = pxat
+	}
+	if kinds > 0 {
+		if err := c.Store.setStringSimple(c.DB, string(args[0]), cur, newExpire); err != nil {
+			return err
+		}
+	}
+	c.writeBulk(cur)
+	return nil
+}
+
+// cmdDelex deletes a key, optionally gated on its current string value
+// (Redis 8's conditional delete). Without a condition it behaves like DEL.
+func cmdDelex(c *Ctx, args [][]byte) error {
+	if len(args) < 1 {
+		return WrongArgs("delex")
+	}
+	key := string(args[0])
+	var cond string
+	var condVal []byte
+	rest := args[1:]
+	if len(rest) > 0 {
+		switch strings.ToUpper(string(rest[0])) {
+		case "IFEQ", "IFNE":
+			if len(rest) != 2 {
+				return WrongArgs("delex")
+			}
+			cond = strings.ToUpper(string(rest[0]))
+			condVal = rest[1]
+		default:
+			return ErrSyntax
+		}
+	}
+	payload, typ, _, ok, err := c.Store.getTyped(c.DB, key)
+	if err != nil {
+		return err
+	}
+	deleted := false
+	if ok {
+		if cond != "" && typ != config.TypeString {
+			return &protoError{"ERR Cannot use IFEQ/IFNE on a key that is not of string type if conditions are used"}
+		}
+		match := cond == "" ||
+			(cond == "IFEQ" && string(payload) == string(condVal)) ||
+			(cond == "IFNE" && string(payload) != string(condVal))
+		if match {
+			if _, err := c.Store.deleteKey(c.DB, key); err != nil {
+				return err
+			}
+			deleted = true
+		}
+	}
+	c.writeInt(btoi(deleted))
+	return nil
 }

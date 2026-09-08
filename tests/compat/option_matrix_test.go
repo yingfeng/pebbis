@@ -22,7 +22,7 @@ func TestZAddOptionMatrix(t *testing.T) {
 	assertInt(t, do(t, c, "ZADD", "z", "LT", "30", "m1"), 0)
 	// INCR replies the new score as a bulk string.
 	assertStr(t, do(t, c, "ZADD", "z", "INCR", "5", "m1"), "35")
-	assertErr(t, do(t, c, "ZADD", "z", "GT", "NX", "50", "m1"), "syntax error")
+	assertErr(t, do(t, c, "ZADD", "z", "GT", "NX", "50", "m1"), "not compatible")
 	assertErr(t, do(t, c, "ZADD", "z", "INCR", "1", "m1", "2", "m2"), "INCR option supports")
 }
 
@@ -137,7 +137,7 @@ func TestSInterCardLimit(t *testing.T) {
 	assertInt(t, do(t, c, "SINTERCARD", "2", "a", "b"), 2)
 	assertInt(t, do(t, c, "SINTERCARD", "2", "a", "b", "LIMIT", "1"), 1)
 	assertInt(t, do(t, c, "SINTERCARD", "2", "a", "missing"), 0)
-	assertErr(t, do(t, c, "SINTERCARD", "2", "a", "b", "LIMIT", "-1"), errNotInt)
+	assertErr(t, do(t, c, "SINTERCARD", "2", "a", "b", "LIMIT", "-1"), "can't be negative")
 }
 
 // TestTouchCounts (SugarDB generic/commands_test.go:4084).

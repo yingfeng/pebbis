@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/redistore/redistore/config"
+	"github.com/redistore/redistore/glob"
 	"github.com/redistore/redistore/storage"
 )
 
@@ -313,15 +314,22 @@ parse:
 	// Redis: NX vs XX are mutually exclusive, and GT/LT cannot combine with
 	// NX. Must live after the parse label: the option scan's goto lands here.
 	if opt.NX && (opt.XX || opt.GT || opt.LT) {
-		return ErrSyntax
+		return &protoError{"ERR GT, LT, and/or NX options at the same time are not compatible"}
 	}
 	if opt.GT && opt.LT {
-		return ErrSyntax
+		return &protoError{"ERR GT, LT, and/or NX options at the same time are not compatible"}
 	}
 	members := []storage.Member{}
 	for ; i+1 < len(args); i += 2 {
 		score, err := toFloat(args[i])
 		if err != nil {
+			// An option token after the pairs is a syntax error, not a bad
+			// float (ZADD z INCR -12 aap NX).
+			for _, o := range []string{"NX", "XX", "GT", "LT", "CH", "INCR"} {
+				if strings.EqualFold(string(args[i]), o) {
+					return ErrSyntax
+				}
+			}
 			return err
 		}
 		if math.IsNaN(score) {
@@ -346,8 +354,14 @@ parse:
 	}
 	// A new element may serve a blocked BZPOPMIN/BZPOPMAX.
 	c.Store.notifyListChanged(c.DB, string(args[0]))
-	if incr != nil {
-		c.w.WriteBulkString(formatFloat(*incr))
+	if opt.INCR {
+		// INCR reports the new score as a bulk string; when the conditions
+		// (NX/XX) rejected the increment Redis answers with a null bulk.
+		if incr == nil {
+			c.writeNull()
+		} else {
+			c.w.WriteBulkString(formatFloat(*incr))
+		}
 		return nil
 	}
 	c.writeInt(added)
@@ -418,15 +432,40 @@ func cmdZRank(c *Ctx, args [][]byte) error    { return rankCmd(c, args, false) }
 func cmdZRevRank(c *Ctx, args [][]byte) error { return rankCmd(c, args, true) }
 
 func rankCmd(c *Ctx, args [][]byte, desc bool) error {
-	if err := c.checkArgLen(len(args), 2); err != nil {
-		return err
+	withScore := false
+	switch len(args) {
+	case 2:
+	case 3:
+		// Redis 7.2: ZRANK key member WITHSCORE replies [rank, score].
+		if !foldEqual(args[2], "WITHSCORE") {
+			return ErrSyntax
+		}
+		withScore = true
+	default:
+		return WrongArgs("zrank")
 	}
 	idx, ok, err := c.Store.zRank(c.DB, string(args[0]), string(args[1]), desc)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		c.writeNull()
+		// A missing rank replies null in both shapes: bare bulk without
+		// WITHSCORE, null array with it.
+		if withScore {
+			c.writeNullArray()
+		} else {
+			c.writeNull()
+		}
+		return nil
+	}
+	if withScore {
+		score, _, err := c.Store.zScore(c.DB, string(args[0]), string(args[1]))
+		if err != nil {
+			return err
+		}
+		c.w.WriteArray(2)
+		c.writeInt(idx)
+		c.w.WriteBulkString(formatFloat(score))
 		return nil
 	}
 	c.writeInt(idx)
@@ -496,6 +535,9 @@ func parseZRangeOpts(args [][]byte, i int) (zRangeOpts, error) {
 			return o, ErrSyntax
 		}
 	}
+	if o.byScore && o.byLex {
+		return o, ErrSyntax
+	}
 	return o, nil
 }
 
@@ -514,6 +556,11 @@ func parseScoreBound(b []byte) (float64, bool, error) {
 		return infNeg, excl, nil
 	}
 	v, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		// Redis uses a bounds-specific message here, not the generic
+		// "value is not a valid float".
+		return 0, excl, &protoError{"ERR min or max is not a float"}
+	}
 	return v, excl, err
 }
 
@@ -522,9 +569,20 @@ var (
 	infNeg = math.Inf(-1)
 )
 
-// cmdZRevRange is the legacy ZREVRANGE form: ZRANGE key start stop REV.
-// go-redis still issues it for ZRevRange.
+// cmdZRevRange is the legacy ZREVRANGE form: ZRANGE key start stop [WITHSCORES].
+// go-redis still issues it for ZRevRange. WITHSCORES is the only option; an
+// extra argument is a syntax error (matching miniredis' suite).
 func cmdZRevRange(c *Ctx, args [][]byte) error {
+	if len(args) < 2 {
+		return WrongArgs("zrevrange")
+	}
+	// Only WITHSCORES may trail (repeats allowed, as in real Redis); anything
+	// else — e.g. REV, which ZRANGE takes — is a syntax error.
+	for _, a := range args[3:] {
+		if !foldEqual(a, "WITHSCORES") {
+			return ErrSyntax
+		}
+	}
 	return cmdZRange(c, append(append([][]byte{}, args...), []byte("REV")))
 }
 
@@ -532,29 +590,55 @@ func cmdZRange(c *Ctx, args [][]byte) error {
 	if err := c.checkArgLen(len(args), -3); err != nil {
 		return err
 	}
-	start, err := toInt64(args[1])
-	if err != nil {
-		return err
-	}
-	stop, err := toInt64(args[2])
-	if err != nil {
-		return err
-	}
 	o, err := parseZRangeOpts(args, 3)
 	if err != nil {
 		return err
+	}
+	if o.hasLimit && !o.byScore && !o.byLex {
+		return &protoError{"ERR syntax error, LIMIT is only supported in combination with either BYSCORE or BYLEX"}
 	}
 	a, err := c.Store.loadAgg(c.DB, string(args[0]), config.TypeZSet)
 	if err != nil {
 		return err
 	}
 	var items []storage.Member
-	if o.byScore {
-		items = filterByScore(sortedMembers(a.zset, false), start, stop, o.minExcl, o.maxExcl)
+	switch {
+	case o.byScore:
+		// BYSCORE bounds are score patterns ("(2", "+inf"), not indices.
+		minF, minEx, err := parseScoreBound(args[1])
+		if err != nil {
+			return err
+		}
+		maxF, maxEx, err := parseScoreBound(args[2])
+		if err != nil {
+			return err
+		}
+		items = filterByScoreRange(sortedMembers(a.zset, false), minF, maxF, minEx, maxEx)
 		if o.rev {
 			reverseMembers(items)
 		}
-	} else {
+	case o.byLex:
+		b1, err := parseLexBound(args[1])
+		if err != nil {
+			return err
+		}
+		b2, err := parseLexBound(args[2])
+		if err != nil {
+			return err
+		}
+		items = lexInRange(sortedByLex(a.zset, false), b1, b2)
+		if o.rev {
+			reverseMembers(items)
+		}
+	default:
+		start, err := toInt64(args[1])
+		if err != nil {
+			return err
+		}
+		stop, err := toInt64(args[2])
+		if err != nil {
+			return err
+		}
 		items = sortedMembers(a.zset, o.rev)
 		items = indexRange(items, int(start), int(stop), o.rev)
 	}
@@ -571,11 +655,11 @@ func cmdZRangeByScore(c *Ctx, args [][]byte) error {
 	}
 	min, minEx, err := parseScoreBound(args[1])
 	if err != nil {
-		return ErrNotFloat
+		return err
 	}
 	max, maxEx, err := parseScoreBound(args[2])
 	if err != nil {
-		return ErrNotFloat
+		return err
 	}
 	o, err := parseZRangeOpts(args, 3)
 	if err != nil {
@@ -615,11 +699,11 @@ func cmdZCount(c *Ctx, args [][]byte) error {
 	}
 	min, minEx, err := parseScoreBound(args[1])
 	if err != nil {
-		return ErrNotFloat
+		return err
 	}
 	max, maxEx, err := parseScoreBound(args[2])
 	if err != nil {
-		return ErrNotFloat
+		return err
 	}
 	a, err := c.Store.loadAgg(c.DB, string(args[0]), config.TypeZSet)
 	if err != nil {
@@ -633,8 +717,11 @@ func cmdZPopMin(c *Ctx, args [][]byte) error { return zPopCmd(c, args, false) }
 func cmdZPopMax(c *Ctx, args [][]byte) error { return zPopCmd(c, args, true) }
 
 func zPopCmd(c *Ctx, args [][]byte, max bool) error {
-	if len(args) < 1 || len(args) > 2 {
+	if len(args) < 1 {
 		return WrongArgs("zpopmin")
+	}
+	if len(args) > 2 {
+		return ErrSyntax
 	}
 	n := 1
 	if len(args) == 2 {
@@ -699,11 +786,11 @@ func cmdZRemRangeByScore(c *Ctx, args [][]byte) error {
 	}
 	min, minEx, err := parseScoreBound(args[1])
 	if err != nil {
-		return ErrNotFloat
+		return err
 	}
 	max, maxEx, err := parseScoreBound(args[2])
 	if err != nil {
-		return ErrNotFloat
+		return err
 	}
 	a, err := c.Store.loadAgg(c.DB, string(args[0]), config.TypeZSet)
 	if err != nil {
@@ -799,7 +886,9 @@ func reverseMembers(items []storage.Member) {
 
 func applyLimit(items []storage.Member, offset, count int) []storage.Member {
 	if offset < 0 {
-		offset = 0
+		// Redis returns an empty result for a negative LIMIT offset in the
+		// BYSCORE/BYLEX forms.
+		return nil
 	}
 	if offset >= len(items) {
 		return nil
@@ -828,5 +917,83 @@ func formatFloat(f float64) string {
 	if f == float64(int64(f)) && f >= -1e17 && f <= 1e17 {
 		return strconv.FormatInt(int64(f), 10)
 	}
-	return strconv.FormatFloat(f, 'g', 17, 64)
+	// Shortest round-trip form: matches Redis' ld2string smart trimming
+	// (1.2+1.2 prints "2.4", not 17 significant digits).
+	return strconv.FormatFloat(f, 'g', -1, 64)
+}
+
+// ---------- zset: ZSCAN ----------
+
+// cmdZScan implements ZSCAN: like HSCAN, one call returns the full (sorted)
+// member/score iteration with cursor 0.
+func cmdZScan(c *Ctx, args [][]byte) error {
+	if err := c.checkArgLen(len(args), -2); err != nil {
+		return err
+	}
+	if _, err := strconv.ParseUint(string(args[1]), 10, 64); err != nil {
+		return &protoError{"ERR invalid cursor"}
+	}
+	var matchFn func(string) bool
+	noScores := false
+	rest := args[2:]
+	for len(rest) > 0 {
+		switch strings.ToUpper(string(rest[0])) {
+		case "MATCH":
+			if len(rest) < 2 {
+				return ErrSyntax
+			}
+			g, cerr := glob.Compile(string(rest[1]))
+			if cerr != nil {
+				return ErrSyntax
+			}
+			matchFn = g.Match
+			rest = rest[2:]
+		case "COUNT":
+			if len(rest) < 2 {
+				return ErrSyntax
+			}
+			cnt, perr := strconv.Atoi(string(rest[1]))
+			if perr != nil {
+				return ErrNotInteger
+			}
+			if cnt <= 0 {
+				return ErrSyntax
+			}
+			rest = rest[2:]
+		case "NOSCORES":
+			noScores = true
+			rest = rest[1:]
+		default:
+			return ErrSyntax
+		}
+	}
+	if matchFn == nil {
+		matchFn = func(string) bool { return true }
+	}
+	a, err := c.Store.loadAgg(c.DB, string(args[0]), config.TypeZSet)
+	if err != nil {
+		return err
+	}
+	members := make([]string, 0, len(a.zset))
+	for m := range a.zset {
+		members = append(members, m)
+	}
+	sort.Strings(members)
+	flat := []string{}
+	for _, m := range members {
+		if !matchFn(m) {
+			continue
+		}
+		flat = append(flat, m)
+		if !noScores {
+			flat = append(flat, formatFloat(a.zset[m]))
+		}
+	}
+	c.w.WriteArray(2)
+	c.w.WriteBulkString("0")
+	c.w.WriteArray(len(flat))
+	for _, s := range flat {
+		c.w.WriteBulkString(s)
+	}
+	return nil
 }

@@ -1,9 +1,9 @@
-package redistore
+package pebbis
 
 import (
 	"strconv"
 
-	"github.com/redistore/redistore/config"
+	"github.com/pebbis/pebbis/config"
 )
 
 // Bit commands.

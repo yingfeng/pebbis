@@ -1,7 +1,7 @@
 package hyperloglog
 
 import (
-	"github.com/redistore/redistore/tests/miniredis/metro"
+	"github.com/pebbis/pebbis/tests/miniredis/metro"
 	"math"
 	"math/bits"
 )

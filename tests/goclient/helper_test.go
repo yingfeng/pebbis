@@ -1,4 +1,4 @@
-// Package goclient drives redistored through go-redis, the official Go
+// Package goclient drives pebbisd through go-redis, the official Go
 // client, over a real TCP connection.
 //
 // The RESP-level suite in tests/compat validates raw protocol bytes; this
@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/redistore/redistore"
+	"github.com/pebbis/pebbis"
 )
 
 // startServer runs a store plus RESP listener on an ephemeral port.
@@ -24,12 +24,12 @@ func startServer(t testing.TB) string {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	store, err := redistore.Open(redistore.DefaultOptions())
+	store, err := pebbis.Open(pebbis.DefaultOptions())
 	if err != nil {
 		_ = ln.Close()
 		t.Fatalf("open store: %v", err)
 	}
-	srv := redistore.NewServer(store, redistore.ServerOptions{Addr: ln.Addr().String()})
+	srv := pebbis.NewServer(store, pebbis.ServerOptions{Addr: ln.Addr().String()})
 	go func() { _ = srv.Serve(ln) }()
 	t.Cleanup(func() {
 		_ = srv.Close()

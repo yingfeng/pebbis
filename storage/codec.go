@@ -40,7 +40,7 @@ const ValueHeaderSize = 9
 const dbWidth = 2
 
 // ErrCorruptValue is returned when an on-disk value is shorter than its header.
-var ErrCorruptValue = errors.New("redistore: corrupt value: shorter than header")
+var ErrCorruptValue = errors.New("Pebbis: corrupt value: shorter than header")
 
 // AppendDataKey writes the data key for (db, key) into dst and returns the result.
 func AppendDataKey(dst []byte, db uint16, key string) []byte {

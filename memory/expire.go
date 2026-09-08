@@ -4,8 +4,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/redistore/redistore/config"
-	"github.com/redistore/redistore/storage"
+	"github.com/pebbis/pebbis/config"
+	"github.com/pebbis/pebbis/storage"
 )
 
 // Expirer reaps keys whose TTL has passed.

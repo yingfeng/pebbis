@@ -1,4 +1,4 @@
-package redistore
+package pebbis
 
 import "strings"
 
@@ -82,7 +82,7 @@ func cmdHello(c *Ctx, args [][]byte) error {
 	// Minimal RESP2 HELLO reply: server name, version, proto.
 	c.w.WriteArray(4)
 	c.w.WriteBulkString("server")
-	c.w.WriteBulkString("redistore")
+	c.w.WriteBulkString("pebbis")
 	c.w.WriteBulkString("proto")
 	c.w.WriteInt(2)
 	return nil

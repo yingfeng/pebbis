@@ -6,7 +6,7 @@ import (
 
 func TestTx(t *testing.T) {
 	skip(t)
-	skipIfRedistored(t, "transaction enqueue/error wording differs from the miniredis reference")
+	skipIfPebbisd(t, "transaction enqueue/error wording differs from the miniredis reference")
 	testRaw(t, func(c *client) {
 		c.Do("MULTI")
 		c.Do("SET", "AAP", "1")

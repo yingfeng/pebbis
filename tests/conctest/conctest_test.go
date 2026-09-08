@@ -1,8 +1,8 @@
 // Package conctest runs a standalone, dependency-free concurrency soak test
-// against a running redistored instance using the go-redis client.
+// against a running pebbisd instance using the go-redis client.
 //
 // It deliberately lives in its own package so it does NOT pull in the
-// tests/goclient suite's shared setup. That lets us exercise redistored with
+// tests/goclient suite's shared setup. That lets us exercise pebbisd with
 // the real go-redis client without standing up that topology.
 //
 // Run with:
@@ -55,19 +55,19 @@ func scanCount(t *testing.T, fn func(cur uint64) (uint64, []string, error)) int 
 	}
 }
 
-// TestRedistoreConcurrentSoak hammers a single redistored with many goroutines
+// TestPebbisConcurrentSoak hammers a single pebbisd with many goroutines
 // doing general commands plus full HSCAN/SSCAN/ZSCAN iterations honouring COUNT,
 // asserting every client observes the expected totals (i.e. the server's
 // pagination cursor is consistent under concurrent access).
-func TestRedistoreConcurrentSoak(t *testing.T) {
+func TestPebbisConcurrentSoak(t *testing.T) {
 	ctx := context.Background()
 	c := newClient()
-	// The soak runs against a live redistored (see package doc). Skip when no
+	// The soak runs against a live pebbisd (see package doc). Skip when no
 	// server is reachable so `make test` stays green in environments without one;
 	// run `make soak` (or set REDIS_ADDR) to actually execute the suite. This
 	// mirrors the skip-when-unavailable convention used by tests/miniredis.
 	if err := c.Ping(ctx).Err(); err != nil {
-		t.Skipf("redistored not reachable at %s: %v (run `make soak` or set REDIS_ADDR)", addr(), err)
+		t.Skipf("pebbisd not reachable at %s: %v (run `make soak` or set REDIS_ADDR)", addr(), err)
 	}
 	if err := c.FlushDB(ctx).Err(); err != nil {
 		t.Fatalf("flush: %v", err)

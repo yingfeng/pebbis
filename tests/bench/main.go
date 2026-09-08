@@ -1,10 +1,10 @@
 // Command bench is a standalone performance/load harness for a running
-// redistored instance. It drives N concurrent go-redis clients through a
+// pebbisd instance. It drives N concurrent go-redis clients through a
 // configurable workload, measures throughput and latency percentiles, and
 // (optionally) verifies that client connections are reaped afterwards.
 //
 // It complements the in-process data-path micro-benchmarks in
-// redistore/bench_sparse_test.go (which measure the storage layer directly):
+// Pebbis/bench_sparse_test.go (which measure the storage layer directly):
 // this one measures the full network + server + storage stack the way a real
 // client sees it, and is also the right harness for surfacing server-side
 // races and goroutine leaks under concurrency.
@@ -12,15 +12,15 @@
 // Examples:
 //
 //	# start a server, then run a 20s mixed load with 64 clients
-//	redistored -addr localhost:6380 -dir /tmp/rs
+//	pebbisd -addr localhost:6380 -dir /tmp/rs
 //	go run ./tests/bench -addr localhost:6380 -clients 64 -duration 20s -workload mixed
 //
 // To check for server-side data races, build the server with -race and run the
 // same harness against it; the race detector will fire on any unsynchronised
 // shared access under concurrent load:
 //
-//	go build -race -o bin/redistored-race ./cmd/redistored
-//	./bin/redistored-race -addr localhost:6380 -dir /tmp/rs &
+//	go build -race -o bin/pebbisd-race ./cmd/pebbisd
+//	./bin/pebbisd-race -addr localhost:6380 -dir /tmp/rs &
 //	go run -race ./tests/bench -addr localhost:6380 -clients 64 -duration 20s -workload mixed
 package main
 
@@ -42,7 +42,7 @@ import (
 )
 
 var (
-	addrF     = flag.String("addr", "localhost:6380", "redistored address")
+	addrF     = flag.String("addr", "localhost:6380", "pebbisd address")
 	clientsF  = flag.Int("clients", 50, "concurrent client connections")
 	durF      = flag.Duration("duration", 10*time.Second, "test duration")
 	warmF     = flag.Duration("warmup", 2*time.Second, "warmup duration")

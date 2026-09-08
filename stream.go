@@ -1,11 +1,11 @@
-package redistore
+package pebbis
 
 import (
 	"encoding/binary"
 	"strconv"
 	"time"
 
-	"github.com/redistore/redistore/storage"
+	"github.com/pebbis/pebbis/storage"
 )
 
 // Stream storage.

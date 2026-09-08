@@ -1,4 +1,4 @@
-package redistore
+package pebbis
 
 import (
 	"strconv"

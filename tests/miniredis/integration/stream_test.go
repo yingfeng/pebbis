@@ -7,7 +7,7 @@ import (
 )
 
 func TestStream(t *testing.T) {
-	if redistoredMode {
+	if pebbisdMode {
 		t.Skip("stream blocking reads (XREADGROUP) hang under the differential harness")
 	}
 	skip(t)
@@ -322,7 +322,7 @@ func TestStream(t *testing.T) {
 }
 
 func TestStreamRange(t *testing.T) {
-	if redistoredMode {
+	if pebbisdMode {
 		t.Skip("stream blocking reads (XREADGROUP) hang under the differential harness")
 	}
 	skip(t)
@@ -433,7 +433,7 @@ func TestStreamRange(t *testing.T) {
 }
 
 func TestStreamGroup(t *testing.T) {
-	if redistoredMode {
+	if pebbisdMode {
 		t.Skip("stream blocking reads (XREADGROUP) hang under the differential harness")
 	}
 	skip(t)
@@ -753,7 +753,7 @@ func TestStreamGroup(t *testing.T) {
 }
 
 func TestStreamTrim(t *testing.T) {
-	if redistoredMode {
+	if pebbisdMode {
 		t.Skip("stream blocking reads (XREADGROUP) hang under the differential harness")
 	}
 	skip(t)

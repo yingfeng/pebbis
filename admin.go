@@ -1,4 +1,4 @@
-package redistore
+package pebbis
 
 import (
 	"sort"
@@ -8,8 +8,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/redistore/redistore/config"
-	"github.com/redistore/redistore/memory"
+	"github.com/pebbis/pebbis/config"
+	"github.com/pebbis/pebbis/memory"
 )
 
 // Administrative and introspection commands.
@@ -263,7 +263,7 @@ func cmdObject(c *Ctx, args [][]byte) error {
 	}
 }
 
-// cmdDebug implements the DEBUG subcommands redistore supports. Only
+// cmdDebug implements the DEBUG subcommands Pebbis supports. Only
 // SET-ACTIVE-EXPIRE exists: it toggles the background expiry cycle, mirroring
 // Redis' switch used by tests to create stale (logically expired) keys.
 func cmdDebug(c *Ctx, args [][]byte) error {

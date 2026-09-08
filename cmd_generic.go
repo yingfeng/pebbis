@@ -1,4 +1,4 @@
-package redistore
+package pebbis
 
 import (
 	"bytes"
@@ -8,9 +8,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/redistore/redistore/config"
-	"github.com/redistore/redistore/glob"
-	"github.com/redistore/redistore/storage"
+	"github.com/pebbis/pebbis/config"
+	"github.com/pebbis/pebbis/glob"
+	"github.com/pebbis/pebbis/storage"
 )
 
 // Generic (key-space) commands.

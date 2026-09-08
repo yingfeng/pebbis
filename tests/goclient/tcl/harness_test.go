@@ -1,5 +1,5 @@
 // Package tcl hosts the mechanical port of frogdb's redis-regression suite
-// (Redis 8.6.0 unit/*.tcl scenarios) to go-redis against redistored.
+// (Redis 8.6.0 unit/*.tcl scenarios) to go-redis against pebbisd.
 //
 // Each generated test keeps its upstream Rust function name, so failures
 // trace straight back to the corresponding redis-regression source file.
@@ -18,7 +18,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
-	"github.com/redistore/redistore"
+	"github.com/pebbis/pebbis"
 )
 
 var (
@@ -37,8 +37,8 @@ func contextCtx() context.Context { ctxo.Do(func() {}); return ctx }
 // This cuts the startup cost to a single open/close around TestMain.
 
 var (
-	sharedStore *redistore.Store
-	sharedSrv   *redistore.Server
+	sharedStore *pebbis.Store
+	sharedSrv   *pebbis.Server
 	sharedAddr  string
 	sharedOnce  sync.Once
 )
@@ -48,12 +48,12 @@ func bootShared() {
 	if err != nil {
 		panic(fmt.Sprintf("listen: %v", err))
 	}
-	store, err := redistore.Open(redistore.DefaultOptions())
+	store, err := pebbis.Open(pebbis.DefaultOptions())
 	if err != nil {
 		_ = ln.Close()
 		panic(fmt.Sprintf("open store: %v", err))
 	}
-	srv := redistore.NewServer(store, redistore.ServerOptions{Addr: ln.Addr().String()})
+	srv := pebbis.NewServer(store, pebbis.ServerOptions{Addr: ln.Addr().String()})
 	go func() { _ = srv.Serve(ln) }()
 	sharedStore, sharedSrv, sharedAddr = store, srv, ln.Addr().String()
 }

@@ -1,17 +1,17 @@
-// Package redistore is an embeddable, Redis-protocol-compatible store with
+// Package Pebbis is an embeddable, Redis-protocol-compatible store with
 // Pebble-backed persistence and bounded memory.
 //
 // It can be used as a Go library with zero network overhead:
 //
-//	s, err := redistore.Open(redistore.DefaultOptions())
+//	s, err := pebbis.Open(pebbis.DefaultOptions())
 //	defer s.Close()
 //	_ = s.Set(ctx, 0, "k", []byte("v"))
 //
 // or as a standalone RESP server:
 //
-//	srv := redistore.NewServer(s, redistore.ServerOptions{Addr: ":6379"})
+//	srv := pebbis.NewServer(s, pebbis.ServerOptions{Addr: ":6379"})
 //	log.Fatal(srv.ListenAndServe())
-package redistore
+package pebbis
 
 import (
 	"errors"
@@ -21,9 +21,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/redistore/redistore/config"
-	"github.com/redistore/redistore/memory"
-	"github.com/redistore/redistore/storage"
+	"github.com/pebbis/pebbis/config"
+	"github.com/pebbis/pebbis/memory"
+	"github.com/pebbis/pebbis/storage"
 )
 
 // Options configures a Store. It aliases config.Config so callers can use
@@ -349,7 +349,7 @@ func (s *Store) DiskUsage() uint64 { return s.eng.DiskUsageBytes() }
 func (s *Store) Uptime() time.Duration { return time.Since(s.stats.startTime) }
 
 // ErrClosed is returned once the store has been closed.
-var ErrClosed = errors.New("redistore: store is closed")
+var ErrClosed = errors.New("Pebbis: store is closed")
 
 // checkAlive guards command execution after Close.
 func (s *Store) checkAlive() error {

@@ -86,7 +86,7 @@ func TestSelect(t *testing.T) {
 
 func TestAuth(t *testing.T) {
 	skip(t)
-	skipIfRedistored(t, "AUTH error wording/semantics differ from the miniredis reference")
+	skipIfPebbisd(t, "AUTH error wording/semantics differ from the miniredis reference")
 	testAuth(t,
 		"supersecret",
 		func(c *client) {
@@ -146,7 +146,7 @@ func TestAuth(t *testing.T) {
 }
 
 func TestHello(t *testing.T) {
-	t.Skip("RESP3 / HELLO 3 is not supported by redistore")
+	t.Skip("RESP3 / HELLO 3 is not supported by Pebbis")
 	testRaw(t,
 		func(c *client) {
 			c.Do("SADD", "s", "aap") // sets have resp3 specific code

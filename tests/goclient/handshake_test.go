@@ -10,7 +10,7 @@ import (
 )
 
 // TestHandshakeAndBasics: go-redis's default connection negotiation (HELLO 3
-// with RESP2 fallback, CLIENT SETINFO) must succeed against redistored, and
+// with RESP2 fallback, CLIENT SETINFO) must succeed against pebbisd, and
 // the basic round trips must work on both negotiated and forced-RESP2 clients.
 func TestHandshakeAndBasics(t *testing.T) {
 	addr := startServer(t)

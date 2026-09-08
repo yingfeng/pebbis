@@ -1,11 +1,11 @@
-package redistore
+package pebbis
 
 import (
 	"math"
 	"time"
 
-	"github.com/redistore/redistore/config"
-	"github.com/redistore/redistore/storage"
+	"github.com/pebbis/pebbis/config"
+	"github.com/pebbis/pebbis/storage"
 )
 
 // This file holds the data-path primitives shared by the command handlers and

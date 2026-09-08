@@ -1,4 +1,4 @@
-// Command redistored runs a redistore instance as a standalone RESP server.
+// Command pebbisd runs a Pebbis instance as a standalone RESP server.
 package main
 
 import (
@@ -9,8 +9,8 @@ import (
 	"path/filepath"
 	"syscall"
 
-	"github.com/redistore/redistore"
-	"github.com/redistore/redistore/config"
+	"github.com/pebbis/pebbis"
+	"github.com/pebbis/pebbis/config"
 )
 
 func main() {
@@ -28,9 +28,9 @@ func main() {
 	)
 	flag.Parse()
 
-	cfg := redistore.DefaultOptions()
+	cfg := pebbis.DefaultOptions()
 	cfg.Dir = *dir
-	maxMemory, err := redistore.ParseByteSize(*maxMem)
+	maxMemory, err := pebbis.ParseByteSize(*maxMem)
 	if err != nil {
 		log.Fatalf("invalid -maxmemory: %v", err)
 	}
@@ -56,12 +56,12 @@ func main() {
 		}
 	}
 
-	store, err := redistore.Open(cfg)
+	store, err := pebbis.Open(cfg)
 	if err != nil {
 		log.Fatalf("open: %v", err)
 	}
 
-	srv := redistore.NewServer(store, redistore.ServerOptions{
+	srv := pebbis.NewServer(store, pebbis.ServerOptions{
 		Addr:       *addr,
 		MaxClients: *maxClients,
 	})
@@ -72,8 +72,8 @@ func main() {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	log.Printf("redistore %s listening on %s (dir=%q, commands=%d, maxmemory=%d, policy=%s)",
-		redistore.Version, *addr, cfg.Dir, redistore.CommandCount(), cfg.MaxMemory, cfg.EvictionPolicy)
+	log.Printf("Pebbis %s listening on %s (dir=%q, commands=%d, maxmemory=%d, policy=%s)",
+		pebbis.Version, *addr, cfg.Dir, pebbis.CommandCount(), cfg.MaxMemory, cfg.EvictionPolicy)
 
 	select {
 	case err := <-errCh:

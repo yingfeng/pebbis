@@ -5,8 +5,8 @@ import (
 )
 
 func TestScript(t *testing.T) {
-	if redistoredMode {
-		t.Skip("Lua scripting (EVAL) is not supported by redistored")
+	if pebbisdMode {
+		t.Skip("Lua scripting (EVAL) is not supported by pebbisd")
 	}
 	skip(t)
 	t.Run("EVAL", func(t *testing.T) {
@@ -131,8 +131,8 @@ func TestScript(t *testing.T) {
 }
 
 func TestLua(t *testing.T) {
-	if redistoredMode {
-		t.Skip("Lua scripting (EVAL) is not supported by redistored")
+	if pebbisdMode {
+		t.Skip("Lua scripting (EVAL) is not supported by pebbisd")
 	}
 	skip(t)
 	// basic datatype things
@@ -269,8 +269,8 @@ func TestLua(t *testing.T) {
 }
 
 func TestLuaCall(t *testing.T) {
-	if redistoredMode {
-		t.Skip("Lua scripting (EVAL) is not supported by redistored")
+	if pebbisdMode {
+		t.Skip("Lua scripting (EVAL) is not supported by pebbisd")
 	}
 	skip(t)
 	testRaw(t, func(c *client) {
@@ -418,8 +418,8 @@ func TestLuaCall(t *testing.T) {
 }
 
 func TestScriptNoAuth(t *testing.T) {
-	if redistoredMode {
-		t.Skip("Lua scripting (EVAL) is not supported by redistored")
+	if pebbisdMode {
+		t.Skip("Lua scripting (EVAL) is not supported by pebbisd")
 	}
 	skip(t)
 	testAuth(t,
@@ -433,8 +433,8 @@ func TestScriptNoAuth(t *testing.T) {
 }
 
 func TestScriptReplicate(t *testing.T) {
-	if redistoredMode {
-		t.Skip("Lua scripting (EVAL) is not supported by redistored")
+	if pebbisdMode {
+		t.Skip("Lua scripting (EVAL) is not supported by pebbisd")
 	}
 	skip(t)
 	testRaw(t, func(c *client) {
@@ -451,8 +451,8 @@ func TestScriptReplicate(t *testing.T) {
 }
 
 func TestScriptTx(t *testing.T) {
-	if redistoredMode {
-		t.Skip("Lua scripting (EVAL) is not supported by redistored")
+	if pebbisdMode {
+		t.Skip("Lua scripting (EVAL) is not supported by pebbisd")
 	}
 	skip(t)
 	sha2 := "bfbf458525d6a0b19200bfd6db3af481156b367b" // keys[1], argv[1]

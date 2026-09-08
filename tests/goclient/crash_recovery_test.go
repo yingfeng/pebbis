@@ -1,6 +1,6 @@
 package goclient
 
-// Crash recovery: run the real redistored binary, write data, SIGKILL it,
+// Crash recovery: run the real pebbisd binary, write data, SIGKILL it,
 // restart on the same directory and verify nothing acknowledged was lost.
 // This is the production-shaped durability gate.
 
@@ -15,13 +15,13 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-// buildBinary compiles cmd/redistored into a temp dir (once per test).
+// buildBinary compiles cmd/pebbisd into a temp dir (once per test).
 func buildBinary(t *testing.T) string {
 	t.Helper()
-	bin := t.TempDir() + "/redistored"
-	cmd := exec.Command("go", "build", "-o", bin, "github.com/redistore/redistore/cmd/redistored")
+	bin := t.TempDir() + "/pebbisd"
+	cmd := exec.Command("go", "build", "-o", bin, "github.com/pebbis/pebbis/cmd/pebbisd")
 	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("build redistored: %v\n%s", err, out)
+		t.Fatalf("build pebbisd: %v\n%s", err, out)
 	}
 	return bin
 }
@@ -42,7 +42,7 @@ func startProcess(t *testing.T, bin, dir, addr string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command(bin, "-addr", addr, "-dir", dir, "-appendfsync", "always")
 	if err := cmd.Start(); err != nil {
-		t.Fatalf("start redistored: %v", err)
+		t.Fatalf("start pebbisd: %v", err)
 	}
 	return cmd
 }

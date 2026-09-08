@@ -8,10 +8,10 @@ import (
 
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/vfs"
-	"github.com/redistore/redistore/config"
+	"github.com/pebbis/pebbis/config"
 )
 
-// openMergeEngine spins up an in-memory engine with the redistore counter merge
+// openMergeEngine spins up an in-memory engine with the Pebbis counter merge
 // operator registered, exactly the way the production Open does. Each test gets
 // its own engine so failures stay isolated.
 func openMergeEngine(t *testing.T) *Engine {

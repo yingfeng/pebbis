@@ -1,4 +1,4 @@
-package redistore
+package pebbis
 
 import (
 	"bytes"
@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/redistore/redistore/config"
+	"github.com/pebbis/pebbis/config"
 )
 
 func testStore(t *testing.T, mutate func(*config.Config)) *Store {

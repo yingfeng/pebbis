@@ -2,7 +2,7 @@ package goclient
 
 // Port of selected scenarios from Redis 8.6.0's official unit/*.tcl suites,
 // via frogdb's redis-regression crate (which ported the same TCL files to
-// Rust). Only scenarios for commands redistore implements are ported; each
+// Rust). Only scenarios for commands Pebbis implements are ported; each
 // test cites its upstream test name.
 
 import (

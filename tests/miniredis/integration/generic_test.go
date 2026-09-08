@@ -449,7 +449,7 @@ func TestCopy(t *testing.T) {
 		})
 
 		t.Run("stream", func(t *testing.T) {
-			t.Skip("HyperLogLog is not supported by redistore")
+			t.Skip("HyperLogLog is not supported by Pebbis")
 		})
 	})
 }
@@ -487,7 +487,7 @@ func TestClient(t *testing.T) {
 
 func TestObject(t *testing.T) {
 	skip(t)
-	skipIfRedistored(t, "OBJECT error wording differs from the miniredis reference")
+	skipIfPebbisd(t, "OBJECT error wording differs from the miniredis reference")
 	testRaw(t, func(c *client) {
 		c.Do("OBJECT", "IDLETIME", "foo")
 

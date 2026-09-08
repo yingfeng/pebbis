@@ -1,21 +1,21 @@
-BINARY  := redistored
+BINARY  := pebbisd
 GO      ?= go
 PKGS    := ./...
-REDISTORED ?= $(CURDIR)/bin/$(BINARY)
+PEBBISD ?= $(CURDIR)/bin/$(BINARY)
 
-# Standalone concurrency soak test (tests/conctest, run against a real redistored
+# Standalone concurrency soak test (tests/conctest, run against a real pebbisd
 # via the go-redis client). The suite spins up many goroutines that hammer a
 # single key with HSET/SADD/ZADD plus full HSCAN/SSCAN/ZSCAN walks and asserts
 # every client observes the expected (stable) totals - i.e. a sparse aggregate is
-# never observed half-written. Lives inside the redistore module so the repo is
+# never observed half-written. Lives inside the pebbis module so the repo is
 # self-contained (the go-redis client is a normal dependency via go.mod).
 SOAK_PORT   := 6380
 SOAK_ADDR   := localhost:$(SOAK_PORT)
-SOAK_DIR    := /tmp/redistore-soak
-SOAK_PID    := $(SOAK_DIR)/redistored.pid
+SOAK_DIR    := /tmp/pebbis-soak
+SOAK_PID    := $(SOAK_DIR)/pebbisd.pid
 CONCTEST_DIR ?= tests/conctest
 
-# Network-level load benchmark (tests/bench, run against a running redistored).
+# Network-level load benchmark (tests/bench, run against a running pebbisd).
 # Override with BENCH_ARGS, e.g. `make bench-net BENCH_ARGS="-clients 32 -duration 15s -workload mixed"`.
 BENCH_ARGS ?= -clients 64 -duration 20s -workload mixed
 
@@ -32,10 +32,10 @@ build:
 test:
 	$(GO) test -count=1 $(PKGS)
 
-# Differential integration suite: runs miniredis' test harness against redistored,
-# asserting the two behave identically. Requires the redistored binary.
+# Differential integration suite: runs miniredis' test harness against pebbisd,
+# asserting the two behave identically. Requires the pebbisd binary.
 integration: build
-	INT=1 REDISTORED=$(REDISTORED) $(GO) test -count=1 ./tests/miniredis/integration/
+	INT=1 PEBBISD=$(PEBBISD) $(GO) test -count=1 ./tests/miniredis/integration/
 
 # Full suite with the race detector; the default gate for every change.
 race:
@@ -59,15 +59,15 @@ vet:
 clean:
 	rm -rf bin coverage.out coverage.html
 
-# soak starts a fresh redistored, runs the concurrent soak suite from
+# soak starts a fresh pebbisd, runs the concurrent soak suite from
 # go-redis/conctest against it, and shuts the server down afterwards.
 soak: build
 	@mkdir -p $(SOAK_DIR)
-	@$(REDISTORED) -addr $(SOAK_ADDR) -dir $(SOAK_DIR)/data > $(SOAK_DIR)/server.log 2>&1 & echo $$! > $(SOAK_PID)
-	@echo "waiting for redistored on $(SOAK_ADDR)..."
+	@$(PEBBISD) -addr $(SOAK_ADDR) -dir $(SOAK_DIR)/data > $(SOAK_DIR)/server.log 2>&1 & echo $$! > $(SOAK_PID)
+	@echo "waiting for pebbisd on $(SOAK_ADDR)..."
 	@for i in $$(seq 1 50); do \
 	  if printf 'PING\r\n' | timeout 1 nc -q1 localhost $(SOAK_PORT) 2>/dev/null | grep -q PONG; then \
-	    echo "redistored ready"; break; \
+	    echo "pebbisd ready"; break; \
 	  fi; \
 	  sleep 0.2; \
 	done
@@ -77,22 +77,22 @@ soak: build
 	  if [ -f $(SOAK_PID) ]; then kill `cat $(SOAK_PID)` 2>/dev/null; rm -f $(SOAK_PID); fi; \
 	  exit $$rc
 
-# soak.stop kills a stray redistored left over from a failed soak run.
+# soak.stop kills a stray pebbisd left over from a failed soak run.
 soak.stop:
 	@if [ -f $(SOAK_PID) ]; then kill `cat $(SOAK_PID)` 2>/dev/null; rm -f $(SOAK_PID); fi
-	@pkill -f '$(REDISTORED) -addr $(SOAK_ADDR)' 2>/dev/null || true
+	@pkill -f '$(PEBBISD) -addr $(SOAK_ADDR)' 2>/dev/null || true
 
-# bench-net starts a fresh redistored, runs the network-level load benchmark from
+# bench-net starts a fresh pebbisd, runs the network-level load benchmark from
 # tests/bench against it, and shuts the server down afterwards. Use BENCH_ARGS
 # to tune clients/duration/workload. (The in-process data-path micro-benchmarks
 # live under the plain `bench` target via `go test -bench ./...`.)
 bench-net: build
 	@mkdir -p $(SOAK_DIR)
-	@$(REDISTORED) -addr $(SOAK_ADDR) -dir $(SOAK_DIR)/data > $(SOAK_DIR)/server.log 2>&1 & echo $$! > $(SOAK_PID)
-	@echo "waiting for redistored on $(SOAK_ADDR)..."
+	@$(PEBBISD) -addr $(SOAK_ADDR) -dir $(SOAK_DIR)/data > $(SOAK_DIR)/server.log 2>&1 & echo $$! > $(SOAK_PID)
+	@echo "waiting for pebbisd on $(SOAK_ADDR)..."
 	@for i in $$(seq 1 50); do \
 	  if printf 'PING\r\n' | timeout 1 nc -q1 localhost $(SOAK_PORT) 2>/dev/null | grep -q PONG; then \
-	    echo "redistored ready"; break; \
+	    echo "pebbisd ready"; break; \
 	  fi; \
 	  sleep 0.2; \
 	done
@@ -102,16 +102,16 @@ bench-net: build
 	  if [ -f $(SOAK_PID) ]; then kill `cat $(SOAK_PID)` 2>/dev/null; rm -f $(SOAK_PID); fi; \
 	  exit $$rc
 
-# bench-net-race builds redistored WITH the race detector and runs the same
+# bench-net-race builds pebbisd WITH the race detector and runs the same
 # network benchmark, surfacing any server-side data races under concurrent load.
 bench-net-race:
-	$(GO) build -race -o bin/redistored-race ./cmd/redistored
+	$(GO) build -race -o bin/pebbisd-race ./cmd/pebbisd
 	@mkdir -p $(SOAK_DIR)
-	@./bin/redistored-race -addr $(SOAK_ADDR) -dir $(SOAK_DIR)/data > $(SOAK_DIR)/server-race.log 2>&1 & echo $$! > $(SOAK_PID)
-	@echo "waiting for redistored (race) on $(SOAK_ADDR)..."
+	@./bin/pebbisd-race -addr $(SOAK_ADDR) -dir $(SOAK_DIR)/data > $(SOAK_DIR)/server-race.log 2>&1 & echo $$! > $(SOAK_PID)
+	@echo "waiting for pebbisd (race) on $(SOAK_ADDR)..."
 	@for i in $$(seq 1 50); do \
 	  if printf 'PING\r\n' | timeout 1 nc -q1 localhost $(SOAK_PORT) 2>/dev/null | grep -q PONG; then \
-	    echo "redistored ready"; break; \
+	    echo "pebbisd ready"; break; \
 	  fi; \
 	  sleep 0.2; \
 	done

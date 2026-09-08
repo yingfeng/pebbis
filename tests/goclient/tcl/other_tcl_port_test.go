@@ -10,7 +10,7 @@ func Test_TCL_tcl_coverage_help_commands(t *testing.T) {
 }
 
 func Test_TCL_tcl_coverage_memory_purge(t *testing.T) {
-	t.Skip("TODO: redistore: MEMORY maintenance subcommand (management surface, out of scope)")
+	t.Skip("TODO: Pebbis: MEMORY maintenance subcommand (management surface, out of scope)")
 }
 
 func Test_TCL_tcl_pipelining_stresser(t *testing.T) {

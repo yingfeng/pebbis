@@ -6,7 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/redistore/redistore/config"
+	"github.com/pebbis/pebbis/config"
 )
 
 var dictSeed = maphash.MakeSeed()

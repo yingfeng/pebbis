@@ -1,10 +1,10 @@
-package redistore
+package pebbis
 
 import (
 	"sort"
 
-	"github.com/redistore/redistore/config"
-	"github.com/redistore/redistore/storage"
+	"github.com/pebbis/pebbis/config"
+	"github.com/pebbis/pebbis/storage"
 )
 
 // Read/write primitives for the aggregate types.

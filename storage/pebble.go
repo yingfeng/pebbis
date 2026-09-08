@@ -9,7 +9,7 @@ import (
 	"github.com/cockroachdb/pebble"
 	"github.com/cockroachdb/pebble/bloom"
 	"github.com/cockroachdb/pebble/vfs"
-	"github.com/redistore/redistore/config"
+	"github.com/pebbis/pebbis/config"
 )
 
 // ErrNotFound mirrors pebble.ErrNotFound so callers need not import pebble.
@@ -44,7 +44,7 @@ func Open(cfg *config.Config) (*Engine, error) {
 		// on the same key never serialise on a mutex. See storage/merge.go.
 		Merger: &pebble.Merger{
 			Merge: counterMerge{}.Merge,
-			Name:  "redistore.counter",
+			Name:  "pebbis.counter",
 		},
 	}
 
@@ -349,7 +349,7 @@ func prefixEnd(prefix []byte) []byte {
 
 // ErrStop is a sentinel that Scan callers may return to stop early without
 // reporting a failure.
-var ErrStop = errors.New("redistore: stop iteration")
+var ErrStop = errors.New("Pebbis: stop iteration")
 
 // IsStop reports whether err is ErrStop.
 func IsStop(err error) bool {

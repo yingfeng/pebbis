@@ -1,4 +1,4 @@
-package redistore
+package pebbis
 
 import (
 	"strconv"
@@ -6,8 +6,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/redistore/redistore/config"
-	"github.com/redistore/redistore/storage"
+	"github.com/pebbis/pebbis/config"
+	"github.com/pebbis/pebbis/storage"
 )
 
 // benchStore opens an engine with group-sync so the numbers measure the data

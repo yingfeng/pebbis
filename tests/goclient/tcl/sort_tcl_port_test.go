@@ -365,15 +365,15 @@ func Test_TCL_tcl_sort_by_hash_field_store(t *testing.T) {
 }
 
 func Test_TCL_tcl_sort_extracts_store_correctly(t *testing.T) {
-	t.Skip("TODO: redistore: COMMAND GETKEYS not implemented (management surface, out of scope)")
+	t.Skip("TODO: Pebbis: COMMAND GETKEYS not implemented (management surface, out of scope)")
 }
 
 func Test_TCL_tcl_sort_ro_get_keys(t *testing.T) {
-	t.Skip("TODO: redistore: COMMAND GETKEYS not implemented (management surface, out of scope)")
+	t.Skip("TODO: Pebbis: COMMAND GETKEYS not implemented (management surface, out of scope)")
 }
 
 func Test_TCL_tcl_sort_extracts_multiple_store_correctly(t *testing.T) {
-	t.Skip("TODO: redistore: COMMAND GETKEYS not implemented (management surface, out of scope)")
+	t.Skip("TODO: Pebbis: COMMAND GETKEYS not implemented (management surface, out of scope)")
 }
 
 func Test_TCL_tcl_sort_by_subsorts_lexicographically_on_tie(t *testing.T) {

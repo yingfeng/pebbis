@@ -1,4 +1,4 @@
-module github.com/redistore/redistore
+module github.com/pebbis/pebbis
 
 go 1.26.7
 

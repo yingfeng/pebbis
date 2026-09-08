@@ -16,18 +16,18 @@ import (
 const (
 	localSrc   = "./redis_src/"
 	executable = "redis-server"
-	// REDISTORED points at a redistored binary. When set, it is started as
+	// PEBBISD points at a pebbisd binary. When set, it is started as
 	// the "real redis" side of the comparison instead of redis-server, which
-	// turns this suite into a semantic diff between redistore and miniredis.
-	redistoredEnv = "REDISTORED"
+	// turns this suite into a semantic diff between Pebbis and miniredis.
+	pebbisdEnv = "PEBBISD"
 )
 
 type ephemeral exec.Cmd
 
-// redistoredMode is set when the "real redis" side is actually redistored, which
+// pebbisdMode is set when the "real redis" side is actually pebbisd, which
 // does not implement every feature of a full redis (multi-user ACL, cluster mode,
 // TLS). The harness uses it to skip the tests that rely on those features.
-var redistoredMode bool
+var pebbisdMode bool
 
 // Redis starts a memory-only redis on a random port. Will panic if that
 // doesn't work.
@@ -75,8 +75,8 @@ func RedisTLS() (*ephemeral, string) {
 func runRedis(extraConfig string) (*ephemeral, string) {
 	port := arbitraryPort()
 
-	if bin := os.Getenv(redistoredEnv); bin != "" {
-		return runRedistore(bin, port, extraConfig)
+	if bin := os.Getenv(pebbisdEnv); bin != "" {
+		return runPebbis(bin, port, extraConfig)
 	}
 
 	// we prefer the executable from ./redis_src, if any. See ./get_redis.sh
@@ -114,11 +114,11 @@ func runRedis(extraConfig string) (*ephemeral, string) {
 	panic(fmt.Sprintf("No connection on port %d", port))
 }
 
-// runRedistore starts redistored on the given port. Only the config the
+// runPebbis starts pebbisd on the given port. Only the config the
 // harness relies on is translated: everything else (cluster, TLS, ACL users)
 // is unsupported and the tests using it will report the difference.
-func runRedistore(bin string, port int, extraConfig string) (*ephemeral, string) {
-	redistoredMode = true
+func runPebbis(bin string, port int, extraConfig string) (*ephemeral, string) {
+	pebbisdMode = true
 
 	addr := fmt.Sprintf("127.0.0.1:%d", port)
 	args := []string{"--addr", addr}

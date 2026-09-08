@@ -120,7 +120,7 @@ func TestPublish(t *testing.T) {
 
 func TestPubSub(t *testing.T) {
 	skip(t)
-	skipIfRedistored(t, "SUBSCRIBE over the differential harness is incompatible with redcon")
+	skipIfPebbisd(t, "SUBSCRIBE over the differential harness is incompatible with redcon")
 	testRaw(t, func(c *client) {
 		c.Error("wrong number", "PUBSUB")
 		c.Error("subcommand", "PUBSUB", "FOO")
@@ -148,7 +148,7 @@ func TestPubSub(t *testing.T) {
 }
 
 func TestPubsubFull(t *testing.T) {
-	t.Skip("RESP3 pub/sub is not supported by redistore")
+	t.Skip("RESP3 pub/sub is not supported by Pebbis")
 	testRaw2(t, func(c1, c2 *client) {
 		c1.Do("SUBSCRIBE", "news", "sport")
 		c1.Receive()
@@ -380,7 +380,7 @@ func TestSubscriptions(t *testing.T) {
 
 func TestPubsubUnsub(t *testing.T) {
 	skip(t)
-	skipIfRedistored(t, "SUBSCRIBE over the differential harness is incompatible with redcon")
+	skipIfPebbisd(t, "SUBSCRIBE over the differential harness is incompatible with redcon")
 	testRaw2(t, func(c1, c2 *client) {
 		c1.Do("SUBSCRIBE", "news", "sport")
 		c1.Receive()
@@ -392,7 +392,7 @@ func TestPubsubUnsub(t *testing.T) {
 
 func TestPubsubTx(t *testing.T) {
 	skip(t)
-	skipIfRedistored(t, "SUBSCRIBE over the differential harness is incompatible with redcon")
+	skipIfPebbisd(t, "SUBSCRIBE over the differential harness is incompatible with redcon")
 	// publish is in a tx
 	testRaw2(t, func(c1, c2 *client) {
 		c1.Do("SUBSCRIBE", "foo")

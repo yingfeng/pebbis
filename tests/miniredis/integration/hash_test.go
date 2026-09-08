@@ -56,7 +56,7 @@ func TestHash(t *testing.T) {
 	})
 
 	t.Run("expire", func(t *testing.T) {
-		t.Skip("HEXPIRE / hash field TTL is not supported by redistore")
+		t.Skip("HEXPIRE / hash field TTL is not supported by Pebbis")
 		testRaw(t, func(c *client) {
 			c.Do("HSET", "aap", "noot", "mies")
 			c.Do("HEXPIRE", "aap", "3", "FIELDS", "2", "noot", "vuur")
@@ -239,7 +239,7 @@ func TestHstrlen(t *testing.T) {
 
 func TestHrandfield(t *testing.T) {
 	skip(t)
-	skipIfRedistored(t, "HRANDFIELD semantics differ from the miniredis reference")
+	skipIfPebbisd(t, "HRANDFIELD semantics differ from the miniredis reference")
 	testRaw(t, func(c *client) {
 		c.Do("HSET", "one", "foo", "bar")
 		c.Do("HRANDFIELD", "one")
@@ -279,7 +279,7 @@ func TestHrandfield(t *testing.T) {
 }
 
 func TestHTTL(t *testing.T) {
-	t.Skip("hash field TTL (HEXPIRE/HTTL/HPERSIST/HSETEX) is not supported by redistore")
+	t.Skip("hash field TTL (HEXPIRE/HTTL/HPERSIST/HSETEX) is not supported by Pebbis")
 	t.Run("persist", func(t *testing.T) {
 		testRaw(t, func(c *client) {
 			c.Do("HSET", "aap", "noot", "mies")

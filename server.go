@@ -1,4 +1,4 @@
-package redistore
+package pebbis
 
 import (
 	"crypto/tls"
@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/redistore/redistore/glob"
+	"github.com/pebbis/pebbis/glob"
 	"github.com/tidwall/redcon"
 )
 
@@ -258,7 +258,7 @@ func (srv *Server) Close() error {
 	if srv.srv != nil {
 		return srv.srv.Close()
 	}
-	return errors.New("redistore: server not started")
+	return errors.New("Pebbis: server not started")
 }
 
 // Addr returns the listener address, once ListenAndServe has bound it.

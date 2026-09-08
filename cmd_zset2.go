@@ -1,4 +1,4 @@
-package redistore
+package pebbis
 
 import (
 	"math"
@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/redistore/redistore/config"
-	"github.com/redistore/redistore/storage"
+	"github.com/pebbis/pebbis/config"
+	"github.com/pebbis/pebbis/storage"
 )
 
 // Sorted-set completion: lexicographic ranges, set operations, ZRANGESTORE,

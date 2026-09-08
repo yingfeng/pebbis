@@ -1,6 +1,6 @@
 package miniredis
 
-import "github.com/redistore/redistore/tests/miniredis/server"
+import "github.com/pebbis/pebbis/tests/miniredis/server"
 
 // commandsHll handles all hll related operations.
 func commandsHll(m *Miniredis) {

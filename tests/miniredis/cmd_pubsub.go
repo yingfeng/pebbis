@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/redistore/redistore/tests/miniredis/server"
+	"github.com/pebbis/pebbis/tests/miniredis/server"
 )
 
 // commandsPubsub handles all PUB/SUB operations.

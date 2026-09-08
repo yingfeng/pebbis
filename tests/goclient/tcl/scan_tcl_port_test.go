@@ -3,7 +3,7 @@ package tcl
 // Mechanical port of frogdb crates/redis-regression/tests/scan_tcl.rs
 // (Redis 8.6.0 unit/scan.tcl scenarios).
 //
-// Excluded (redistore feature gaps at port time):
+// Excluded (Pebbis feature gaps at port time):
 //   - All SSCAN/HSCAN/ZSCAN tests: SSCAN/HSCAN/ZSCAN commands not implemented.
 //   - tcl_scan_type: SCAN TYPE filtering not implemented (parsed, not applied).
 //   - tcl_scan_with_expired_keys: uses DEBUG SET-ACTIVE-EXPIRE (not implemented).

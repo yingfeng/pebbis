@@ -1,11 +1,11 @@
-# redistore
+# Pebbis
 
 An embedded, Redis-compatible data store written in Go, with [Pebble](https://github.com/cockroachdb/pebble) as its storage engine.
 
 It can be used two ways:
 
 - **As a library** — import it, open a `Store`, and talk RESP semantics without any socket. Persistence, expiration, eviction and transactions all work in-process.
-- **As a server** — `cmd/redistored` speaks RESP2 over TCP, so any Redis client (`redis-cli`, go-redis, …) can connect.
+- **As a server** — `cmd/pebbisd` speaks RESP2 over TCP, so any Redis client (`redis-cli`, go-redis, …) can connect.
 
 ## Design highlights
 
@@ -20,7 +20,7 @@ It can be used two ways:
 Embedded:
 
 ```go
-store, err := redistore.Open(redistore.WithDir("/path/to/data"))
+store, err := pebbis.Open(pebbis.WithDir("/path/to/data"))
 if err != nil {
     return err
 }
@@ -30,8 +30,8 @@ defer store.Close()
 Server:
 
 ```
-go build -o bin/redistored ./cmd/redistored
-./bin/redistored -addr :6379 -dir ./data
+go build -o bin/pebbisd ./cmd/pebbisd
+./bin/pebbisd -addr :6379 -dir ./data
 ```
 
 Configuration (see `config/`): `maxmemory`, `maxmemory-policy`, `slowlog-log-slower-than`, `slowlog-max-len`, `lfu-decay-time`.
@@ -70,7 +70,7 @@ Anything not listed here will return an `ERR unknown command` error, same as Red
 ## Development
 
 ```
-make build   # build cmd/redistored into bin/
+make build   # build cmd/pebbisd into bin/
 make race    # go test -race across all packages (the standard gate)
 make bench   # run benchmarks (XADD, sparse aggregates, ...)
 make cover   # coverage profile + HTML report

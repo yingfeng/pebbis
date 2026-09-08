@@ -182,7 +182,7 @@ func TestSortedSetAdd(t *testing.T) {
 
 func TestSortedSetRange(t *testing.T) {
 	skip(t)
-	skipIfRedistored(t, "ZRANGEBYLEX/BYSCORE edge semantics differ from the miniredis reference")
+	skipIfPebbisd(t, "ZRANGEBYLEX/BYSCORE edge semantics differ from the miniredis reference")
 	testRaw(t, func(c *client) {
 		c.Do("ZADD", "z",
 			"1", "aap",

@@ -11,8 +11,8 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/redistore/redistore/tests/miniredis"
-	"github.com/redistore/redistore/tests/miniredis/proto"
+	"github.com/pebbis/pebbis/tests/miniredis"
+	"github.com/pebbis/pebbis/tests/miniredis/proto"
 )
 
 func skip(t testing.TB) {
@@ -22,14 +22,14 @@ func skip(t testing.TB) {
 	}
 }
 
-// skipIfRedistored marks a test as skipped when the "real redis" side is
-// redistored. redistored intentionally implements a subset of Redis, so tests
+// skipIfPebbisd marks a test as skipped when the "real redis" side is
+// pebbisd. pebbisd intentionally implements a subset of Redis, so tests
 // that depend on unsupported features (GEO, MEMORY, WAIT, multi-user ACL,
 // cluster, TLS, scripting, RESP3) or on exact error wording that only matches
 // miniredis's reference implementation are skipped here.
-func skipIfRedistored(t testing.TB, reason string) {
+func skipIfPebbisd(t testing.TB, reason string) {
 	t.Helper()
-	if os.Getenv(redistoredEnv) != "" {
+	if os.Getenv(pebbisdEnv) != "" {
 		t.Skip(reason)
 	}
 }
@@ -102,8 +102,8 @@ func testAuth(t *testing.T, passwd string, cb func(*client)) {
 func testUserAuth(t *testing.T, users map[string]string, cb func(*client)) {
 	t.Helper()
 
-	if os.Getenv(redistoredEnv) != "" {
-		t.Skip("multi-user ACL authentication is not supported by redistored")
+	if os.Getenv(pebbisdEnv) != "" {
+		t.Skip("multi-user ACL authentication is not supported by pebbisd")
 	}
 
 	sMini := miniredis.RunT(t)
@@ -123,8 +123,8 @@ func testUserAuth(t *testing.T, users map[string]string, cb func(*client)) {
 func testCluster(t *testing.T, cb func(*client)) {
 	t.Helper()
 
-	if os.Getenv(redistoredEnv) != "" {
-		t.Skip("cluster mode is not supported by redistored")
+	if os.Getenv(pebbisdEnv) != "" {
+		t.Skip("cluster mode is not supported by pebbisd")
 	}
 
 	sMini := miniredis.RunT(t)
@@ -141,8 +141,8 @@ func testCluster(t *testing.T, cb func(*client)) {
 func testTLS(t *testing.T, cb func(*client)) {
 	t.Helper()
 
-	if os.Getenv(redistoredEnv) != "" {
-		t.Skip("TLS is not supported by redistored")
+	if os.Getenv(pebbisdEnv) != "" {
+		t.Skip("TLS is not supported by pebbisd")
 	}
 
 	sMini := miniredis.NewMiniRedis()
@@ -163,9 +163,9 @@ func testTLS(t *testing.T, cb func(*client)) {
 func testRESP3(t *testing.T, cb func(*client)) {
 	t.Helper()
 
-	// redistore speaks RESP2 only; RESP3 (HELLO 3) is unsupported, so any
+	// Pebbis speaks RESP2 only; RESP3 (HELLO 3) is unsupported, so any
 	// RESP3-oriented assertion can never match and is skipped here.
-	t.Skip("RESP3 is not supported by redistore")
+	t.Skip("RESP3 is not supported by Pebbis")
 
 	sMini := miniredis.RunT(t)
 
@@ -181,7 +181,7 @@ func testRESP3(t *testing.T, cb func(*client)) {
 func testRESP3Pair(t *testing.T, cb func(*client, *client)) {
 	t.Helper()
 
-	t.Skip("RESP3 is not supported by redistore")
+	t.Skip("RESP3 is not supported by Pebbis")
 
 	sMini := miniredis.RunT(t)
 

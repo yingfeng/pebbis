@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/redistore/redistore/tests/miniredis/server"
+	"github.com/pebbis/pebbis/tests/miniredis/server"
 )
 
 const (

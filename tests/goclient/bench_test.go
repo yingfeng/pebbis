@@ -1,7 +1,7 @@
 package goclient
 
 // Benchmarks modelled on go-redis' own bench_test.go: same shape (b.RunParallel
-// over a pooled client), pointed at a live redistored instance. Run with:
+// over a pooled client), pointed at a live pebbisd instance. Run with:
 //
 //	go test ./tests/goclient -bench . -benchmem -benchtime 1s
 

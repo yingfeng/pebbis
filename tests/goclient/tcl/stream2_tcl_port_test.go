@@ -6,9 +6,9 @@ package tcl
 //
 // Deferred (not ported here) — see notes at end of file:
 //   - 11 blocking XREAD/XREADGROUP tests (require a 2nd client + timing infra)
-//   - 6 XSETID tests (XSETID command is not implemented in redistore)
+//   - 6 XSETID tests (XSETID command is not implemented in Pebbis)
 //   - 5 XADD MAXLEN/MINID/LIMIT option tests (option unsupported; needs a
-//     stream-exists marker + node-approximate trimming redistore lacks)
+//     stream-exists marker + node-approximate trimming Pebbis lacks)
 //   - 1 MULTI/EXEC transaction test (go-redis pooled conns break MULTI/EXEC)
 
 import (
@@ -184,9 +184,9 @@ func Test_TCL_tcl_xadd_zero_star_should_succeed(t *testing.T) {
 
 func Test_TCL_tcl_xadd_with_id_zero_zero(t *testing.T) {
 	// frogdb deviates from Redis here: real Redis rejects XADD "0-0"
-	// ("The ID specified in XADD must be greater than 0-0"), which redistore
+	// ("The ID specified in XADD must be greater than 0-0"), which Pebbis
 	// and the compat suite assert. This frogdb expectation cannot hold.
-	t.Skip("frogdb expects XADD 0-0 to succeed, but Redis rejects it (redistore matches Redis)")
+	t.Skip("frogdb expects XADD 0-0 to succeed, but Redis rejects it (Pebbis matches Redis)")
 	addr := startServer(t)
 	client := connect(t, addr)
 

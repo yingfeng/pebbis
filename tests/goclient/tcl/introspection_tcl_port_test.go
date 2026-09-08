@@ -107,11 +107,11 @@ func Test_TCL_tcl_client_ids_are_unique(t *testing.T) {
 }
 
 func Test_TCL_tcl_client_no_evict_syntax_error(t *testing.T) {
-	t.Skip("TODO: redistore: CLIENT introspection (management surface, out of scope)")
+	t.Skip("TODO: Pebbis: CLIENT introspection (management surface, out of scope)")
 }
 
 func Test_TCL_tcl_client_no_evict_on_off(t *testing.T) {
-	t.Skip("TODO: redistore: CLIENT introspection (management surface, out of scope)")
+	t.Skip("TODO: Pebbis: CLIENT introspection (management surface, out of scope)")
 }
 
 func Test_TCL_tcl_client_kill_by_id(t *testing.T) {
@@ -147,7 +147,7 @@ func Test_TCL_tcl_command_docs_extension_omits_unknown_complexity(t *testing.T) 
 }
 
 func Test_TCL_tcl_command_docs_unknown_is_skipped(t *testing.T) {
-	t.Skip("TODO: redistore: COMMAND introspection (management surface, out of scope)")
+	t.Skip("TODO: Pebbis: COMMAND introspection (management surface, out of scope)")
 }
 
 func Test_TCL_tcl_command_docs_all_commands(t *testing.T) {
@@ -178,7 +178,7 @@ func Test_TCL_tcl_config_set_duplicate_error(t *testing.T) {
 }
 
 func Test_TCL_tcl_object_help(t *testing.T) {
-	t.Skip("TODO: redistore: command HELP (management surface, out of scope)")
+	t.Skip("TODO: Pebbis: command HELP (management surface, out of scope)")
 }
 
 func Test_TCL_tcl_object_encoding_string(t *testing.T) {

@@ -1,4 +1,4 @@
-// Package config holds the tunable knobs of a redistore instance.
+// Package config holds the tunable knobs of a Pebbis instance.
 package config
 
 import (

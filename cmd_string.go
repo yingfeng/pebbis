@@ -1,12 +1,12 @@
-package redistore
+package pebbis
 
 import (
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/redistore/redistore/config"
-	"github.com/redistore/redistore/storage"
+	"github.com/pebbis/pebbis/config"
+	"github.com/pebbis/pebbis/storage"
 )
 
 // String commands.

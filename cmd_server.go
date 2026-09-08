@@ -1,4 +1,4 @@
-package redistore
+package pebbis
 
 import (
 	"fmt"
@@ -26,7 +26,7 @@ func cmdInfo(c *Ctx, args [][]byte) error {
 
 	if section == "default" || section == "all" || section == "server" {
 		b.WriteString("# Server\r\n")
-		fmt.Fprintf(&b, "redistore_version:%s\r\n", Version)
+		fmt.Fprintf(&b, "pebbis_version:%s\r\n", Version)
 		fmt.Fprintf(&b, "redis_mode:standalone\r\n")
 		fmt.Fprintf(&b, "databases:%d\r\n", s.DBCount())
 		fmt.Fprintf(&b, "uptime_in_seconds:%d\r\n", int64(s.Uptime().Seconds()))

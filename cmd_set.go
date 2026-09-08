@@ -1,4 +1,4 @@
-package redistore
+package pebbis
 
 import (
 	"math/rand/v2"
@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/redistore/redistore/config"
-	"github.com/redistore/redistore/glob"
-	"github.com/redistore/redistore/storage"
+	"github.com/pebbis/pebbis/config"
+	"github.com/pebbis/pebbis/glob"
+	"github.com/pebbis/pebbis/storage"
 )
 
 // Set commands.

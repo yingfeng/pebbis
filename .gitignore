@@ -1,6 +1,6 @@
 # Build output
 /bin/
-/redistored
+/pebbisd
 
 # Go test binaries & profiles
 *.test

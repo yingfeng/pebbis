@@ -3,7 +3,7 @@ package tcl
 // Mechanical port of frogdb crates/redis-regression/tests/expire_tcl.rs
 // (Redis 8.6.0 unit/expire.tcl scenarios).
 //
-// Excluded (redistore feature gaps at port time):
+// Excluded (Pebbis feature gaps at port time):
 //   - GETEX tests (tcl_getex_*): GETEX command not implemented.
 //   - Sub-second timing tests (tcl_expire_precision_*, tcl_psetex_*,
 //     tcl_pexpire_*, tcl_pexpireat_can_set_sub_second_*): rely on observing

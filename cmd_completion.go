@@ -1,4 +1,4 @@
-package redistore
+package pebbis
 
 import (
 	"math"
@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/redistore/redistore/config"
-	"github.com/redistore/redistore/memory"
-	"github.com/redistore/redistore/storage"
+	"github.com/pebbis/pebbis/config"
+	"github.com/pebbis/pebbis/memory"
+	"github.com/pebbis/pebbis/storage"
 )
 
 // M1 completion for list, generic and string commands.

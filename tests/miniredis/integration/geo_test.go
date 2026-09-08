@@ -5,7 +5,7 @@ import (
 )
 
 func TestGeoadd(t *testing.T) {
-	skipIfRedistored(t, "GEO commands are not supported by redistored")
+	skipIfPebbisd(t, "GEO commands are not supported by pebbisd")
 	skip(t)
 	testRaw(t, func(c *client) {
 		c.Do("GEOADD",
@@ -68,7 +68,7 @@ func TestGeoadd(t *testing.T) {
 }
 
 func TestGeopos(t *testing.T) {
-	skipIfRedistored(t, "GEO commands are not supported by redistored")
+	skipIfPebbisd(t, "GEO commands are not supported by pebbisd")
 	skip(t)
 	testRaw(t, func(c *client) {
 		c.Do("GEOADD",
@@ -91,7 +91,7 @@ func TestGeopos(t *testing.T) {
 }
 
 func TestGeodist(t *testing.T) {
-	skipIfRedistored(t, "GEO commands are not supported by redistored")
+	skipIfPebbisd(t, "GEO commands are not supported by pebbisd")
 	skip(t)
 	testRaw(t, func(c *client) {
 		c.Do("GEOADD",
@@ -123,7 +123,7 @@ func TestGeodist(t *testing.T) {
 }
 
 func TestGeoradius(t *testing.T) {
-	skipIfRedistored(t, "GEO commands are not supported by redistored")
+	skipIfPebbisd(t, "GEO commands are not supported by pebbisd")
 	skip(t)
 	t.Run("basic", func(t *testing.T) {
 		testRaw(t, func(c *client) {
@@ -275,7 +275,7 @@ func TestGeoradius(t *testing.T) {
 }
 
 func TestGeoradiusByMember(t *testing.T) {
-	skipIfRedistored(t, "GEO commands are not supported by redistored")
+	skipIfPebbisd(t, "GEO commands are not supported by pebbisd")
 	skip(t)
 	t.Run("basic", func(t *testing.T) {
 		testRaw(t, func(c *client) {
@@ -429,7 +429,7 @@ func TestGeoradiusByMember(t *testing.T) {
 
 // a bit longer testset
 func TestGeo(t *testing.T) {
-	skipIfRedistored(t, "GEO commands are not supported by redistored")
+	skipIfPebbisd(t, "GEO commands are not supported by pebbisd")
 	skip(t)
 	// some subway stations
 	// https://data.cityofnewyork.us/Transportation/Subway-Stations/arq3-7z49/data
@@ -945,7 +945,7 @@ func TestGeo(t *testing.T) {
 }
 
 func TestGeosearch(t *testing.T) {
-	skipIfRedistored(t, "GEO commands are not supported by redistored")
+	skipIfPebbisd(t, "GEO commands are not supported by pebbisd")
 	skip(t)
 	testRaw(t, func(c *client) {
 		c.Do("GEOADD",

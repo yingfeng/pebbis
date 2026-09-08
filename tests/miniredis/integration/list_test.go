@@ -56,7 +56,7 @@ func TestLPushLpop(t *testing.T) {
 	})
 
 	t.Run("resp3", func(t *testing.T) {
-		t.Skip("RESP3 is not supported by redistore")
+		t.Skip("RESP3 is not supported by Pebbis")
 	})
 }
 
@@ -120,7 +120,7 @@ func TestRPushRPop(t *testing.T) {
 	})
 
 	t.Run("resp3", func(t *testing.T) {
-		t.Skip("RESP3 is not supported by redistore")
+		t.Skip("RESP3 is not supported by Pebbis")
 	})
 }
 
@@ -134,7 +134,7 @@ func TestLinxed(t *testing.T) {
 		c.Do("LINDEX", "l", "3")
 		c.Do("LINDEX", "l", "4")
 		c.Do("LINDEX", "l", "44444")
-		// LINDEX "-0": Redis treats "-0" as index 0 (not an error); redistore
+		// LINDEX "-0": Redis treats "-0" as index 0 (not an error); Pebbis
 		// matches real redis, so this legacy assertion is removed.
 		c.Do("LINDEX", "l", "-1")
 		c.Do("LINDEX", "l", "-2")
@@ -209,7 +209,7 @@ func TestLpos(t *testing.T) {
 		c.Error("syntax error", "LPOS", "l", "aap", "RANKS", "1")
 		c.Error("syntax error", "LPOS", "l", "aap", "RANK", "1", "COUNTING", "1")
 		c.Error("syntax error", "LPOS", "l", "aap", "RANK", "1", "MAXLENGTH", "1")
-		// LPOS RANK/COUNT/MAXLEN error-text edges: redistore uses the Redis
+		// LPOS RANK/COUNT/MAXLEN error-text edges: Pebbis uses the Redis
 		// wording, which the forked mini reference does not share verbatim.
 		c.Error("can't be zero", "LPOS", "l", "aap", "RANK", "0")
 		c.Error("can't be negative", "LPOS", "l", "aap", "COUNT", "-1")

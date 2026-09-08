@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/redistore/redistore"
-	"github.com/redistore/redistore/config"
+	"github.com/pebbis/pebbis"
+	"github.com/pebbis/pebbis/config"
 	"github.com/tidwall/resp"
 )
 
@@ -47,16 +47,16 @@ func setupWith(t *testing.T, mutate func(*config.Config)) *resp.Conn {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	cfg := redistore.DefaultOptions()
+	cfg := pebbis.DefaultOptions()
 	if mutate != nil {
 		mutate(cfg)
 	}
-	store, err := redistore.Open(cfg)
+	store, err := pebbis.Open(cfg)
 	if err != nil {
 		_ = ln.Close()
 		t.Fatalf("open store: %v", err)
 	}
-	srv := redistore.NewServer(store, redistore.ServerOptions{Addr: ln.Addr().String()})
+	srv := pebbis.NewServer(store, pebbis.ServerOptions{Addr: ln.Addr().String()})
 
 	go func() { _ = srv.Serve(ln) }()
 
@@ -99,15 +99,15 @@ func setupPersistent(t *testing.T, dir string) *setupResult {
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
-	cfg := redistore.DefaultOptions()
+	cfg := pebbis.DefaultOptions()
 	cfg.Dir = dir
 	cfg.SyncPolicy = config.SyncAlways
-	store, err := redistore.Open(cfg)
+	store, err := pebbis.Open(cfg)
 	if err != nil {
 		_ = ln.Close()
 		t.Fatalf("open store: %v", err)
 	}
-	srv := redistore.NewServer(store, redistore.ServerOptions{Addr: ln.Addr().String()})
+	srv := pebbis.NewServer(store, pebbis.ServerOptions{Addr: ln.Addr().String()})
 	go func() { _ = srv.Serve(ln) }()
 
 	conn, err := net.Dial("tcp", ln.Addr().String())

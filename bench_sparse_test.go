@@ -1,11 +1,11 @@
-package redistore
+package pebbis
 
 import (
 	"strconv"
 	"testing"
 
-	"github.com/redistore/redistore/config"
-	"github.com/redistore/redistore/storage"
+	"github.com/pebbis/pebbis/config"
+	"github.com/pebbis/pebbis/storage"
 )
 
 // The benchmark that justifies the sparse point-write path: with the

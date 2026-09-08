@@ -36,7 +36,7 @@ const (
 )
 
 // ErrCorruptObject is returned when an encoded aggregate fails to decode.
-var ErrCorruptObject = errors.New("redistore: corrupt aggregate object")
+var ErrCorruptObject = errors.New("Pebbis: corrupt aggregate object")
 
 // Member is one scored member of a sorted set.
 type Member struct {

@@ -8,7 +8,7 @@ import (
 	"strings"
 
 	"github.com/cockroachdb/pebble"
-	"github.com/redistore/redistore/config"
+	"github.com/pebbis/pebbis/config"
 )
 
 // Merge operator tags. A merge operand is [tag(1)][payload]. Integers carry an

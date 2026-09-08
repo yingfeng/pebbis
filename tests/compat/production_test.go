@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/redistore/redistore"
-	"github.com/redistore/redistore/config"
+	"github.com/pebbis/pebbis"
+	"github.com/pebbis/pebbis/config"
 	"github.com/tidwall/resp"
 )
 
@@ -456,4 +456,4 @@ func TestEvictionPersistKeepsDataServed(t *testing.T) {
 	}
 }
 
-var _ = redistore.Version
+var _ = pebbis.Version
